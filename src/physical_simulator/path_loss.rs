@@ -6,10 +6,11 @@ n: path loss exponent
 C: a constant that depends on the environment
 */
 
+#[derive(Clone, Copy, Debug)]
 pub struct Position {
-    x: f64,
-    y: f64,
-    z: f64,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
 }
 
 impl Position {
