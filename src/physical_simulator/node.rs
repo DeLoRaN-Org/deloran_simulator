@@ -4,7 +4,7 @@ use lorawan::{physical_parameters::SpreadingFactor, utils::eui::EUI64};
 use lorawan_device::{communicator::{CommunicatorError, LoRaPacket, LoRaWANCommunicator}, configs::RadioDeviceConfig, devices::lorawan_device::LoRaWANDevice};
 use tokio::{sync::mpsc::Sender, time::Instant};
 
-use super::{path_loss::Position, world::Transmission};
+use super::{path_loss::Position, world::{ReceivedTransmission, Transmission}};
 
 
 #[derive(Clone, Debug, Copy)]
@@ -12,8 +12,7 @@ pub struct NodeConfig {
     pub position: Position,
 
     pub transmission_power_dbm: f32,  //14 dbm for indoor devices and 27dbm for outdoor devices
-    pub path_loss_exponent: f32,
-    pub constant: f32,                
+    pub receiver_sensitivity: f32,    //-137 dbm for SF12 and 125kHz --> generato automaticamente lol      
 
     pub tx_consumption: f32,
     pub rx_consumption: f32,
@@ -34,12 +33,63 @@ pub enum NodeState {
 #[derive(Debug)]
 pub struct Node {
     pub device: LoRaWANDevice<NodeCommunicator>,
+    pub received_transmissions: Vec<ReceivedTransmission>,
 }
 
 impl Node {
     pub fn new(device: LoRaWANDevice<NodeCommunicator>) -> Node {
         Node {
             device,
+            received_transmissions: Vec::new(),
+        }
+    }
+
+    fn bandwidth_collision(&self, t1: &Transmission, t2: &Transmission) -> bool {
+        if t1.frequency == 500.0 || t2.frequency == 500.0 {
+            (t1.frequency - t2.frequency).abs() <= 120.0
+        } else if t1.frequency == 250.0 || t2.frequency == 250.0 {
+            (t1.frequency - t2.frequency).abs() <= 60.0
+        } else {
+            (t1.frequency - t2.frequency).abs() <= 30.0
+        }
+    }
+
+    fn sf_collision(&self, t1: &Transmission, t2: &Transmission) -> bool {
+        t1.spreading_factor == t2.spreading_factor
+    }
+
+    fn power_collision(&self, t1: &ReceivedTransmission, t2: &ReceivedTransmission) -> (bool, bool) {
+        let power_threshold = 6.0;  //dB
+
+        //TODO togliere unwrap
+        if (t1.arrival_stats.rssi - t2.arrival_stats.rssi).abs() < power_threshold {
+            (true, true)
+        } else if t1.arrival_stats.rssi - t2.arrival_stats.rssi < power_threshold {
+            (true, false)
+        } else {
+            (false, true)
+        }
+    }
+
+    fn check_collisions(&mut self) {
+        for i in  0..self.received_transmissions.len() {
+            for j in i +  1..self.received_transmissions.len() {
+                let t1 = &self.received_transmissions[i];
+                let t2 = &self.received_transmissions[j];
+    
+                let t1_toa = t1.time_on_air();
+                let t2_toa = t2.time_on_air();
+
+                if t1.transmission.start_time < (t2.transmission.start_time + t2_toa) && t2.transmission.start_time < (t1.transmission.start_time + t1_toa) { //time overlap
+                    if t1.transmission.frequency == t2.transmission.frequency { //frequency overlap
+                        if t1.transmission.spreading_factor == t2.transmission.spreading_factor { // spreading factor collision
+                            //TODO togliere unwrap
+                            self.received_transmissions[i].arrival_stats.collided = true;
+                            self.received_transmissions[j].arrival_stats.collided = true;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -48,7 +98,7 @@ impl Node {
     }
 }
 
-/* 
+ 
 impl Deref for Node {
     type Target = LoRaWANDevice<NodeCommunicator>;
 
@@ -62,7 +112,7 @@ impl DerefMut for Node {
         &mut self.device
     }
 }
-*/
+
 
 pub struct NodeCommunicator {
     sender: Sender<Transmission>,
@@ -141,10 +191,9 @@ impl LoRaWANCommunicator for NodeCommunicator {
             start_time: SystemTime::UNIX_EPOCH.elapsed().unwrap().as_millis(),
             frequency: self.config.radio_config.tx_freq,
             bandwidth: self.config.radio_config.bandwidth,
-            spreading_factor: self.config.radio_config.spreading_factor.value(),
+            spreading_factor: self.config.radio_config.spreading_factor,
             coding_rate: self.config.radio_config.code_rate,
             payload: bytes.to_vec(),
-            arrival_stats: None,
         }).await.map_err(|_| CommunicatorError::Radio("Error sending message to channel".to_owned()))
     }
 

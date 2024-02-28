@@ -21,8 +21,7 @@ const NODE_CONFIG: NodeConfig = NodeConfig {
         z: 0.0
     },
     transmission_power_dbm: 14.0,
-    path_loss_exponent: 2.0,
-    constant: 20.0,
+    receiver_sensitivity: -120.0,
     tx_consumption: 0.0,
     rx_consumption: 0.0,
     idle_consumption: 0.0,
@@ -49,6 +48,7 @@ const NODE_CONFIG: NodeConfig = NodeConfig {
     file: https://github.com/mcbor/lorasim/blob/main/loraDir.py
 */
 
+#[derive(Debug, Clone, Copy)]
 pub struct ArrivalStats {
     pub time: u128,
     pub rssi: f32,
@@ -56,30 +56,28 @@ pub struct ArrivalStats {
     pub collided: bool,
 }
 
+#[derive(Debug, Clone)]
 pub struct Transmission {
     pub start_position: Position,
     pub start_time: u128,
     pub frequency: f32,
     pub bandwidth: f32,
-    pub spreading_factor: u8,
+    pub spreading_factor: SpreadingFactor,
     pub coding_rate: CodeRate,
     pub payload: Vec<u8>,
-
-    pub arrival_stats: Option<ArrivalStats>,
 }
-
 
 impl Transmission {
     //https://github.com/avbentem/airtime-calculator/blob/master/doc/LoraDesignGuide_STD.pdf
-    fn time_on_air(&self) -> u128 {
+    pub fn time_on_air(&self) -> u128 {
         let header_disabled = 0_u32; // implicit header disabled (H=0) or not (H=1), can only have implicit header with SF6
         let mut data_rate_optimization = 0_u32; // low data rate optimization enabled (=1) or not (=0)
-        if self.bandwidth == 125.0 && (self.spreading_factor == 11 || self.spreading_factor == 12) {
+        if self.bandwidth == 125.0 && (self.spreading_factor == SpreadingFactor::SF11 || self.spreading_factor == SpreadingFactor::SF12) {
             data_rate_optimization = 1; // low data rate optimization mandated for BW125 with SF11 and SF12
         }
 
         let npream = 8_u32; // number of preamble symbol (12.25 from Utz paper)
-        let tsym = ((2.0f32).powi(self.spreading_factor as i32) / (self.bandwidth * 1000.0)) * 1000.0;
+        let tsym = ((2.0f32).powi(self.spreading_factor.value() as i32) / (self.bandwidth * 1000.0)) * 1000.0;
         let tpream = (npream as f32 + 4.25) * tsym;
 
         let cr = match self.coding_rate {
@@ -90,23 +88,37 @@ impl Transmission {
         } - 4;
 
 
-        let v1 = ((8 * (self.payload.len()) - 4 * (self.spreading_factor as usize) + 44 - 20 * header_disabled as usize)  //28 + 16 = 44(? -->     payloadSymbNB = 8 + max(math.ceil((8.0*pl-4.0*sf+28+16-20*H)/(4.0*(sf-2*DE)))*(cr+4),0))
-            / (4 * ((self.spreading_factor as usize) - 2 * data_rate_optimization as usize))) * (cr + 4);
+        let v1 = ((8 * (self.payload.len()) - 4 * (self.spreading_factor.value() as usize) + 44 - 20 * header_disabled as usize)  //28 + 16 = 44(? -->     payloadSymbNB = 8 + max(math.ceil((8.0*pl-4.0*sf+28+16-20*H)/(4.0*(sf-2*DE)))*(cr+4),0))
+            / (4 * ((self.spreading_factor.value() as usize) - 2 * data_rate_optimization as usize))) * (cr + 4);
         let payload_symb_nb = 8 + (if v1 > 0 { v1 } else { 0 });
         let tpayload = (payload_symb_nb as f32) * tsym;
         (tpream + tpayload).round() as u128
     }
-
 }
+
+
+#[derive(Debug, Clone)]
+pub struct ReceivedTransmission {
+    pub transmission: Transmission,
+    pub arrival_stats: ArrivalStats,
+}
+
+impl ReceivedTransmission {
+    pub fn time_on_air(&self) -> u128 {
+        self.transmission.time_on_air()
+    }
+}
+
 
 pub struct World {
     path_loss_model: PathLossModel,
     epochs: u64,
 
     nodes: Vec<Node>,
-    transmissions: Vec<Transmission>,
-    sender: Sender<Transmission>,
+    transmissions_on_air: Vec<Transmission>,
+
     
+    sender: Sender<Transmission>,
     receiver: Receiver<Transmission>,
 }
 
@@ -117,7 +129,7 @@ impl World {
             nodes,
             epochs: 0,
             path_loss_model,
-            transmissions: Vec::new(),
+            transmissions_on_air: Vec::new(),
             sender,
             receiver
         }
@@ -131,8 +143,7 @@ impl World {
                 z: 0.0
             },
             transmission_power_dbm: 14.0,
-            path_loss_exponent: 2.0,
-            constant: 20.0,
+            receiver_sensitivity: -120.0,
             tx_consumption: 0.0,
             rx_consumption: 0.0,
             idle_consumption: 0.0,
@@ -150,7 +161,7 @@ impl World {
                 rx_chan_id: 1,
                 tx_chan_id: 1,
                 code_rate: CodeRate::CR4_5
-            }
+            },
         });
 
         let node = LoRaWANDevice::new(device, node_communicator);
@@ -173,58 +184,8 @@ impl World {
         &self.path_loss_model
     }
 
-    fn bandwidth_collision(&self, t1: &Transmission, t2: &Transmission) -> bool {
-        if t1.frequency == 500.0 || t2.frequency == 500.0 {
-            (t1.frequency - t2.frequency).abs() <= 120.0
-        } else if t1.frequency == 250.0 || t2.frequency == 250.0 {
-            (t1.frequency - t2.frequency).abs() <= 60.0
-        } else {
-            (t1.frequency - t2.frequency).abs() <= 30.0
-        }
-    }
-
-    fn sf_collision(&self, t1: &Transmission, t2: &Transmission) -> bool {
-        t1.spreading_factor == t2.spreading_factor
-    }
-
-    fn power_collision(&self, t1: &Transmission, t2: &Transmission) -> (bool, bool) {
-        let power_threshold = 6.0;  //dB
-
-        //TODO togliere unwrap
-        if (t1.arrival_stats.as_ref().unwrap().rssi - t2.arrival_stats.as_ref().unwrap().rssi).abs() < power_threshold {
-            (true, true)
-        } else if t1.arrival_stats.as_ref().unwrap().rssi - t2.arrival_stats.as_ref().unwrap().rssi < power_threshold {
-            (true, false)
-        } else {
-            (false, true)
-        }
-    }
-
-    fn check_collisions(&mut self) {
-        for i in  0..self.transmissions.len() {
-            for j in i +  1..self.transmissions.len() {
-                let t1 = &self.transmissions[i];
-                let t2 = &self.transmissions[j];
-    
-                let t1_toa = t1.time_on_air();
-                let t2_toa = t2.time_on_air();
-
-                if t1.start_time < (t2.start_time + t2_toa) && t2.start_time < (t1.start_time + t1_toa) { //time overlap
-                    if t1.frequency == t2.frequency { //frequency overlap
-                        if t1.spreading_factor == t2.spreading_factor { // spreading factor collision
-                            //TODO togliere unwrap
-                            self.transmissions[i].arrival_stats.as_mut().unwrap().collided = true;
-                            self.transmissions[j].arrival_stats.as_mut().unwrap().collided = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     pub fn tick(&mut self) {
         self.epochs += 1;
-        self.check_collisions();
         for node in self.nodes.iter_mut() {
             node.tick();
         }
