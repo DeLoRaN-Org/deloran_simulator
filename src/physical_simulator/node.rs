@@ -1,8 +1,8 @@
-use std::{collections::HashMap, ops::{Deref, DerefMut}, time::{Duration, Instant, SystemTime}};
+use std::{collections::HashMap, ops::{Deref, DerefMut}, time::{Duration, SystemTime}};
 
 use lorawan::{physical_parameters::SpreadingFactor, utils::eui::EUI64};
 use lorawan_device::{communicator::{CommunicatorError, LoRaPacket, LoRaWANCommunicator}, configs::RadioDeviceConfig, devices::lorawan_device::LoRaWANDevice};
-use tokio::sync::mpsc::Sender;
+use tokio::{sync::mpsc::Sender, time::Instant};
 
 use super::{path_loss::Position, world::Transmission};
 
@@ -11,14 +11,14 @@ use super::{path_loss::Position, world::Transmission};
 pub struct NodeConfig {
     pub position: Position,
 
-    pub transmission_power_dbm: f64,  //14 dbm for indoor devices and 27dbm for outdoor devices
-    pub path_loss_exponent: f64,
-    pub constant: f64,                
+    pub transmission_power_dbm: f32,  //14 dbm for indoor devices and 27dbm for outdoor devices
+    pub path_loss_exponent: f32,
+    pub constant: f32,                
 
-    pub tx_consumption: f64,
-    pub rx_consumption: f64,
-    pub idle_consumption: f64,
-    pub sleep_consumption: f64,
+    pub tx_consumption: f32,
+    pub rx_consumption: f32,
+    pub idle_consumption: f32,
+    pub sleep_consumption: f32,
 
     pub radio_config: RadioDeviceConfig,
 }
@@ -48,6 +48,7 @@ impl Node {
     }
 }
 
+/* 
 impl Deref for Node {
     type Target = LoRaWANDevice<NodeCommunicator>;
 
@@ -61,6 +62,7 @@ impl DerefMut for Node {
         &mut self.device
     }
 }
+*/
 
 pub struct NodeCommunicator {
     sender: Sender<Transmission>,
@@ -90,12 +92,12 @@ impl NodeCommunicator {
         }
     }
 
-    pub fn calculate_signal_strength(&self, distance: f64, path_loss_exponent: f64, constant: f64) -> f64 {
+    pub fn calculate_signal_strength(&self, distance: f32, path_loss_exponent: f32, constant: f32) -> f32 {
         self.config.transmission_power_dbm - 10.0 * path_loss_exponent * distance.log10() - constant
     }
 
-    pub fn calculate_energy_consumption(&self, duration: Duration) -> f64 {
-        let seconds = duration.as_secs_f64();
+    pub fn calculate_energy_consumption(&self, duration: Duration) -> f32 {
+        let seconds = duration.as_secs_f32();
         let energy_consumption = match self.state {
             NodeState::Idle => self.config.idle_consumption,
             NodeState::Sleep => self.config.sleep_consumption,
@@ -130,18 +132,18 @@ impl LoRaWANCommunicator for NodeCommunicator {
     
     async fn send_uplink(
         &self,
-        _bytes: &[u8],
+        bytes: &[u8],
         _src: Option<EUI64>,
         _dest: Option<EUI64>,
     ) -> Result<(), CommunicatorError> {
         self.sender.send(Transmission {
             start_position: self.config.position,
             start_time: SystemTime::UNIX_EPOCH.elapsed().unwrap().as_millis(),
-            frequency: self.config.,
-            bandwidth: self.config.freq,
-            spreading_factor: self.config.freq,
-            coding_rate: self.config.freq,
-            payload: self.config.freq,
+            frequency: self.config.radio_config.tx_freq,
+            bandwidth: self.config.radio_config.bandwidth,
+            spreading_factor: self.config.radio_config.spreading_factor.value(),
+            coding_rate: self.config.radio_config.code_rate,
+            payload: bytes.to_vec(),
             arrival_stats: None,
         }).await.map_err(|_| CommunicatorError::Radio("Error sending message to channel".to_owned()))
     }

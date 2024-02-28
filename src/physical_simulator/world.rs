@@ -1,5 +1,5 @@
-use lorawan::{device::Device, physical_parameters::CodeRate};
-use lorawan_device::devices::lorawan_device::LoRaWANDevice;
+use lorawan::{device::Device, physical_parameters::{CodeRate, DataRate, SpreadingFactor}, regional_parameters::region::Region};
+use lorawan_device::{configs::RadioDeviceConfig, devices::lorawan_device::LoRaWANDevice};
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use super::{node::{Node, NodeCommunicator, NodeConfig}, path_loss::{PathLossModel, Position}};
@@ -27,6 +27,20 @@ const NODE_CONFIG: NodeConfig = NodeConfig {
     rx_consumption: 0.0,
     idle_consumption: 0.0,
     sleep_consumption: 0.0,
+    radio_config: RadioDeviceConfig {
+        region: Region::EU863_870,
+        spreading_factor: SpreadingFactor::SF7,
+        data_rate: DataRate::DR5,
+        rx_gain: 10,
+        tx_gain: 20,
+        bandwidth: 125_000.0,
+        sample_rate: 1_000_000.0,
+        rx_freq: 990_000_000.0,
+        tx_freq: 1_010_000_000.0,
+        rx_chan_id: 0,
+        tx_chan_id: 1,
+        code_rate: CodeRate::CR4_5
+    }
 };
 
 /*
@@ -37,16 +51,16 @@ const NODE_CONFIG: NodeConfig = NodeConfig {
 
 pub struct ArrivalStats {
     pub time: u128,
-    pub rssi: f64,
-    pub snr: f64,
+    pub rssi: f32,
+    pub snr: f32,
     pub collided: bool,
 }
 
 pub struct Transmission {
     pub start_position: Position,
     pub start_time: u128,
-    pub frequency: f64,
-    pub bandwidth: f64,
+    pub frequency: f32,
+    pub bandwidth: f32,
     pub spreading_factor: u8,
     pub coding_rate: CodeRate,
     pub payload: Vec<u8>,
@@ -58,15 +72,15 @@ pub struct Transmission {
 impl Transmission {
     //https://github.com/avbentem/airtime-calculator/blob/master/doc/LoraDesignGuide_STD.pdf
     fn time_on_air(&self) -> u128 {
-        let mut header_disabled = 0_u32; // implicit header disabled (H=0) or not (H=1), can only have implicit header with SF6
+        let header_disabled = 0_u32; // implicit header disabled (H=0) or not (H=1), can only have implicit header with SF6
         let mut data_rate_optimization = 0_u32; // low data rate optimization enabled (=1) or not (=0)
         if self.bandwidth == 125.0 && (self.spreading_factor == 11 || self.spreading_factor == 12) {
             data_rate_optimization = 1; // low data rate optimization mandated for BW125 with SF11 and SF12
         }
 
         let npream = 8_u32; // number of preamble symbol (12.25 from Utz paper)
-        let tsym = ((2.0f64).powi(self.spreading_factor as i32) / (self.bandwidth * 1000.0)) * 1000.0;
-        let tpream = (npream as f64 + 4.25) * tsym;
+        let tsym = ((2.0f32).powi(self.spreading_factor as i32) / (self.bandwidth * 1000.0)) * 1000.0;
+        let tpream = (npream as f32 + 4.25) * tsym;
 
         let cr = match self.coding_rate {
             CodeRate::CR4_5 => 5,
@@ -79,7 +93,7 @@ impl Transmission {
         let v1 = ((8 * (self.payload.len()) - 4 * (self.spreading_factor as usize) + 44 - 20 * header_disabled as usize)  //28 + 16 = 44(? -->     payloadSymbNB = 8 + max(math.ceil((8.0*pl-4.0*sf+28+16-20*H)/(4.0*(sf-2*DE)))*(cr+4),0))
             / (4 * ((self.spreading_factor as usize) - 2 * data_rate_optimization as usize))) * (cr + 4);
         let payload_symb_nb = 8 + (if v1 > 0 { v1 } else { 0 });
-        let tpayload = (payload_symb_nb as f64) * tsym;
+        let tpayload = (payload_symb_nb as f32) * tsym;
         (tpream + tpayload).round() as u128
     }
 
@@ -92,8 +106,7 @@ pub struct World {
     nodes: Vec<Node>,
     transmissions: Vec<Transmission>,
     sender: Sender<Transmission>,
-
-
+    
     receiver: Receiver<Transmission>,
 }
 
@@ -124,6 +137,20 @@ impl World {
             rx_consumption: 0.0,
             idle_consumption: 0.0,
             sleep_consumption: 0.0,
+            radio_config: RadioDeviceConfig {
+                region: Region::EU863_870,
+                spreading_factor: SpreadingFactor::new(7),
+                data_rate: DataRate::new(0),
+                rx_gain: 0,
+                tx_gain: 0,
+                bandwidth: 125_000.0,
+                rx_freq: 868000000.0,
+                tx_freq: 868000000.0,
+                sample_rate: 1.0,
+                rx_chan_id: 1,
+                tx_chan_id: 1,
+                code_rate: CodeRate::CR4_5
+            }
         });
 
         let node = LoRaWANDevice::new(device, node_communicator);
@@ -164,9 +191,9 @@ impl World {
         let power_threshold = 6.0;  //dB
 
         //TODO togliere unwrap
-        if (t1.arrival_stats.unwrap().rssi - t2.arrival_stats.unwrap().rssi).abs() < power_threshold {
+        if (t1.arrival_stats.as_ref().unwrap().rssi - t2.arrival_stats.as_ref().unwrap().rssi).abs() < power_threshold {
             (true, true)
-        } else if t1.arrival_stats.unwrap().rssi - t2.arrival_stats.unwrap().rssi < power_threshold {
+        } else if t1.arrival_stats.as_ref().unwrap().rssi - t2.arrival_stats.as_ref().unwrap().rssi < power_threshold {
             (true, false)
         } else {
             (false, true)
@@ -186,8 +213,8 @@ impl World {
                     if t1.frequency == t2.frequency { //frequency overlap
                         if t1.spreading_factor == t2.spreading_factor { // spreading factor collision
                             //TODO togliere unwrap
-                            self.transmissions[i].arrival_stats.unwrap().collided = true;
-                            self.transmissions[j].arrival_stats.unwrap().collided = true;
+                            self.transmissions[i].arrival_stats.as_mut().unwrap().collided = true;
+                            self.transmissions[j].arrival_stats.as_mut().unwrap().collided = true;
                         }
                     }
                 }
@@ -202,5 +229,4 @@ impl World {
             node.tick();
         }
     }
-
 }
