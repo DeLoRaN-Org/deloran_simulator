@@ -2,7 +2,7 @@ use std::{collections::HashMap, ops::{Deref, DerefMut}, time::{Duration, SystemT
 
 use lorawan::{physical_parameters::SpreadingFactor, utils::eui::EUI64};
 use lorawan_device::{communicator::{CommunicatorError, LoRaPacket, LoRaWANCommunicator}, configs::RadioDeviceConfig, devices::lorawan_device::LoRaWANDevice};
-use tokio::{sync::mpsc::Sender, time::Instant};
+use tokio::{sync::mpsc::{Receiver, Sender}, time::Instant};
 
 use super::{path_loss::Position, world::{ReceivedTransmission, Transmission}};
 
@@ -33,67 +33,21 @@ pub enum NodeState {
 #[derive(Debug)]
 pub struct Node {
     pub device: LoRaWANDevice<NodeCommunicator>,
-    pub received_transmissions: Vec<ReceivedTransmission>,
 }
 
 impl Node {
     pub fn new(device: LoRaWANDevice<NodeCommunicator>) -> Node {
         Node {
             device,
-            received_transmissions: Vec::new(),
         }
     }
 
-    fn bandwidth_collision(&self, t1: &Transmission, t2: &Transmission) -> bool {
-        if t1.frequency == 500.0 || t2.frequency == 500.0 {
-            (t1.frequency - t2.frequency).abs() <= 120.0
-        } else if t1.frequency == 250.0 || t2.frequency == 250.0 {
-            (t1.frequency - t2.frequency).abs() <= 60.0
-        } else {
-            (t1.frequency - t2.frequency).abs() <= 30.0
-        }
+    pub fn get_position(&self) -> Position {
+        self.communicator().config.position
     }
 
-    fn sf_collision(&self, t1: &Transmission, t2: &Transmission) -> bool {
-        t1.spreading_factor == t2.spreading_factor
-    }
 
-    fn power_collision(&self, t1: &ReceivedTransmission, t2: &ReceivedTransmission) -> (bool, bool) {
-        let power_threshold = 6.0;  //dB
-
-        //TODO togliere unwrap
-        if (t1.arrival_stats.rssi - t2.arrival_stats.rssi).abs() < power_threshold {
-            (true, true)
-        } else if t1.arrival_stats.rssi - t2.arrival_stats.rssi < power_threshold {
-            (true, false)
-        } else {
-            (false, true)
-        }
-    }
-
-    fn check_collisions(&mut self) {
-        for i in  0..self.received_transmissions.len() {
-            for j in i +  1..self.received_transmissions.len() {
-                let t1 = &self.received_transmissions[i];
-                let t2 = &self.received_transmissions[j];
-    
-                let t1_toa = t1.time_on_air();
-                let t2_toa = t2.time_on_air();
-
-                if t1.transmission.start_time < (t2.transmission.start_time + t2_toa) && t2.transmission.start_time < (t1.transmission.start_time + t1_toa) { //time overlap
-                    if t1.transmission.frequency == t2.transmission.frequency { //frequency overlap
-                        if t1.transmission.spreading_factor == t2.transmission.spreading_factor { // spreading factor collision
-                            //TODO togliere unwrap
-                            self.received_transmissions[i].arrival_stats.collided = true;
-                            self.received_transmissions[j].arrival_stats.collided = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn tick(&mut self) {
+    pub async fn tick(&mut self) {
 
     }
 }
@@ -116,6 +70,7 @@ impl DerefMut for Node {
 
 pub struct NodeCommunicator {
     sender: Sender<Transmission>,
+    received_transmissions: Vec<ReceivedTransmission>,
 
     config: NodeConfig,
     state: NodeState,
@@ -128,9 +83,8 @@ pub struct NodeCommunicator {
 }
 
 impl NodeCommunicator {
-
-    pub fn new(sender: Sender<Transmission>, config: NodeConfig) -> NodeCommunicator {
-        NodeCommunicator {
+    pub fn new(sender: Sender<Transmission>,  config: NodeConfig) -> NodeCommunicator {
+    NodeCommunicator {
             sender,
             config,
             state: NodeState::Idle,
@@ -139,6 +93,7 @@ impl NodeCommunicator {
             rx_time: Duration::from_secs(0),
             idle_time: Duration::from_secs(0),
             sleep_time: Duration::from_secs(0),
+            received_transmissions: Vec::new(),
         }
     }
 
@@ -169,6 +124,14 @@ impl NodeCommunicator {
         self.state = new_state;
         self.last_status_change = Instant::now();
     }
+
+    pub fn receive_transmission(&mut self, transmission: ReceivedTransmission) {
+        self.received_transmissions.push(transmission);
+    }
+
+    pub fn get_config(&self) -> &NodeConfig {
+        &self.config
+    }
 }
 
 
@@ -193,6 +156,8 @@ impl LoRaWANCommunicator for NodeCommunicator {
             bandwidth: self.config.radio_config.bandwidth,
             spreading_factor: self.config.radio_config.spreading_factor,
             coding_rate: self.config.radio_config.code_rate,
+            collided: false,
+            starting_power: self.config.transmission_power_dbm,
             payload: bytes.to_vec(),
         }).await.map_err(|_| CommunicatorError::Radio("Error sending message to channel".to_owned()))
     }
@@ -201,6 +166,9 @@ impl LoRaWANCommunicator for NodeCommunicator {
         &self,
         _timeout: Option<Duration>,
     ) -> Result<HashMap<SpreadingFactor, LoRaPacket>, CommunicatorError> {
+        
+
+
         todo!()
     }
 }

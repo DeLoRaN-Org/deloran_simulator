@@ -1,18 +1,13 @@
+use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+
 use lorawan::{device::Device, physical_parameters::{CodeRate, DataRate, SpreadingFactor}, regional_parameters::region::Region};
 use lorawan_device::{configs::RadioDeviceConfig, devices::lorawan_device::LoRaWANDevice};
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{mpsc::{Receiver, Sender}, Mutex};
 
 use super::{node::{Node, NodeCommunicator, NodeConfig}, path_loss::{PathLossModel, Position}};
 
 
 const SPEED_OF_LIGHT: f64 = 299_792_458.0;
-
-const SF7:  [f64; 4] = [7.0,-126.5,-124.25,-120.75];
-const SF8:  [f64; 4] = [8.0,-127.25,-126.75,-124.0];
-const SF9:  [f64; 4] = [9.0,-131.25,-128.25,-127.5];
-const SF10: [f64; 4] = [10.0,-132.75,-130.25,-128.75];
-const SF11: [f64; 4] = [11.0,-134.5,-132.75,-128.75];
-const SF12: [f64; 4] = [12.0,-133.25,-132.25,-132.25];
 
 const NODE_CONFIG: NodeConfig = NodeConfig {
     position: Position {
@@ -20,7 +15,7 @@ const NODE_CONFIG: NodeConfig = NodeConfig {
         y: 0.0, 
         z: 0.0
     },
-    transmission_power_dbm: 14.0,
+    transmission_power_dbm: 0.0,
     receiver_sensitivity: -120.0,
     tx_consumption: 0.0,
     rx_consumption: 0.0,
@@ -42,18 +37,11 @@ const NODE_CONFIG: NodeConfig = NodeConfig {
     }
 };
 
-/*
-    Collision checks taken from:
-    repo: https://github.com/mcbor/lorasim
-    file: https://github.com/mcbor/lorasim/blob/main/loraDir.py
-*/
-
 #[derive(Debug, Clone, Copy)]
 pub struct ArrivalStats {
     pub time: u128,
     pub rssi: f32,
     pub snr: f32,
-    pub collided: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +52,9 @@ pub struct Transmission {
     pub bandwidth: f32,
     pub spreading_factor: SpreadingFactor,
     pub coding_rate: CodeRate,
+    pub collided: bool,
+    pub starting_power: f32,
+
     pub payload: Vec<u8>,
 }
 
@@ -94,6 +85,10 @@ impl Transmission {
         let tpayload = (payload_symb_nb as f32) * tsym;
         (tpream + tpayload).round() as u128
     }
+
+    pub fn ended(&self) -> bool {
+        World::get_milliseconds_from_epoch() > self.start_time + self.time_on_air()
+    }
 }
 
 
@@ -115,24 +110,36 @@ pub struct World {
     epochs: u64,
 
     nodes: Vec<Node>,
-    transmissions_on_air: Vec<Transmission>,
-
-    
+    transmissions_on_air: Arc<Mutex<Vec<Transmission>>>,
+ 
     sender: Sender<Transmission>,
-    receiver: Receiver<Transmission>,
 }
 
 impl World {
-    pub fn new(nodes: Vec<Node>, path_loss_model: PathLossModel) -> World {
-        let (sender, receiver) = tokio::sync::mpsc::channel(100);
+    pub fn new(path_loss_model: PathLossModel) -> World {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(100);
+        let transmissions_on_air = Arc::new(Mutex::new(Vec::new()));
+        let toac = transmissions_on_air.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let transmission = receiver.recv().await.unwrap();
+                println!("Received transmission: {:?}", transmission);
+                toac.lock().await.push(transmission);
+            }
+        });
+        
         World {
-            nodes,
+            nodes: Vec::new(),
             epochs: 0,
             path_loss_model,
-            transmissions_on_air: Vec::new(),
+            transmissions_on_air,
             sender,
-            receiver
         }
+    }
+
+    fn get_milliseconds_from_epoch() -> u128 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
     }
 
     pub fn add_node(&mut self, device: Device) {
@@ -184,10 +191,78 @@ impl World {
         &self.path_loss_model
     }
 
-    pub fn tick(&mut self) {
+    pub async fn tick(&mut self) {
         self.epochs += 1;
+        self.check_collisions().await;
         for node in self.nodes.iter_mut() {
-            node.tick();
+            node.tick().await;
         }
+    }
+
+    /*
+    Collision checks taken from:
+    repo: https://github.com/mcbor/lorasim
+    repo: https://github/florasim/flora
+
+    file: https://github.com/mcbor/lorasim/blob/main/loraDir.py
+    file: https://github/florasim/flora/blob/main/src/LoRaPhy/LoRaReceiver.cc
+    */
+
+    fn timing_collision(t1: &Transmission, t2: &Transmission) -> bool {
+        let t1_toa = t1.time_on_air();
+        let t2_toa = t2.time_on_air();
+        t1.start_time > t2.start_time && t1.start_time < (t2.start_time + t2_toa) ||
+        t2.start_time > t1.start_time && t2.start_time < (t1.start_time + t1_toa)
+    }
+
+    fn bandwidth_collision(t1: &Transmission, t2: &Transmission) -> bool {
+        if t1.frequency == 500_000.0 || t2.frequency == 500_000.0 {
+            (t1.frequency - t2.frequency).abs() <= 120_000.0
+        } else if t1.frequency == 250_000.0 || t2.frequency == 250_000.0 {
+            (t1.frequency - t2.frequency).abs() <= 60_000.0
+        } else {
+            (t1.frequency - t2.frequency).abs() <= 30_000.0
+        }
+    }
+
+    fn sf_collision(t1: &Transmission, t2: &Transmission) -> bool {
+        t1.spreading_factor == t2.spreading_factor
+    }
+
+    fn power_collision(t1_rssi: f32, t2_rssi: f32) -> bool {
+        let power_threshold = 6.0;  //dB, it is hardcoded both in lorasim and flora
+        (t1_rssi - t2_rssi).abs() < power_threshold || t1_rssi - t2_rssi < power_threshold
+    }
+
+    async fn check_collisions(&mut self) {
+        let mut transmissions_on_air = self.transmissions_on_air.lock().await;
+        for i in  0..transmissions_on_air.len() {
+            let t1 = &transmissions_on_air[i];
+            if t1.ended() { //if transmission ended
+                for j in i + 1..transmissions_on_air.len() {
+
+                    let t2 = &transmissions_on_air[j];
+                    if World::timing_collision(t1, t2) && World::bandwidth_collision(t1, t2) && World::sf_collision(t1, t2) {
+                        for node in self.nodes.iter_mut() {
+                            let t1_rssi = t1.starting_power - self.path_loss_model.get_path_loss(node.get_position().distance(&t1.start_position));
+                            let t2_rssi = t2.starting_power - self.path_loss_model.get_path_loss(node.get_position().distance(&t2.start_position));
+                            let t1_power_collision = World::power_collision(t1_rssi, t2_rssi);
+                            if !t1_power_collision {
+                                let t1_rx: ReceivedTransmission = ReceivedTransmission {
+                                    transmission: t1.clone(),
+                                    arrival_stats: ArrivalStats {
+                                        time: World::get_milliseconds_from_epoch(),
+                                        rssi: t1_rssi,
+                                        snr: 0.0,
+                                    }
+                                };
+                                node.communicator_mut().receive_transmission(t1_rx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        transmissions_on_air.retain(|t| !t.ended());
     }
 }

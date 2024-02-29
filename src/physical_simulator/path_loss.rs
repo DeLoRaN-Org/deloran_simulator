@@ -52,6 +52,12 @@ impl PathLossModel {
     pub fn get_path_loss(&self, distance: f32) -> f32 {
         let n = self.get_path_loss_exponent();
         let c = self.get_path_loss_constant();
-        10.0 * n * (distance.log10()) + c
+        
+        match self {
+            PathLossModel::FreeSpace => 10.0 * n * (distance.log10()) + c,
+            PathLossModel::Urban => todo!(),
+            PathLossModel::Suburban => todo!(),
+            PathLossModel::Rural => todo!(),
+        }
     }
 }
