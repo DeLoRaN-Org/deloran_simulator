@@ -52,7 +52,6 @@ pub struct Transmission {
     pub bandwidth: f32,
     pub spreading_factor: SpreadingFactor,
     pub coding_rate: CodeRate,
-    pub collided: bool,
     pub starting_power: f32,
 
     pub payload: Vec<u8>,

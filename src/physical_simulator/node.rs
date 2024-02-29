@@ -156,7 +156,6 @@ impl LoRaWANCommunicator for NodeCommunicator {
             bandwidth: self.config.radio_config.bandwidth,
             spreading_factor: self.config.radio_config.spreading_factor,
             coding_rate: self.config.radio_config.code_rate,
-            collided: false,
             starting_power: self.config.transmission_power_dbm,
             payload: bytes.to_vec(),
         }).await.map_err(|_| CommunicatorError::Radio("Error sending message to channel".to_owned()))
@@ -166,7 +165,6 @@ impl LoRaWANCommunicator for NodeCommunicator {
         &self,
         _timeout: Option<Duration>,
     ) -> Result<HashMap<SpreadingFactor, LoRaPacket>, CommunicatorError> {
-        
 
 
         todo!()
