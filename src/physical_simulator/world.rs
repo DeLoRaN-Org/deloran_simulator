@@ -71,14 +71,10 @@ impl World {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
     }
 
-    pub fn add_node(&mut self, device: Device) {
+    pub fn add_node(&mut self, device: Device, position: Position) {
         let (sender, receiver) = tokio::sync::mpsc::channel(10);
         let node_communicator = NodeCommunicator::new(self.sender.clone(), receiver,NodeConfig {
-            position: Position {
-                x: 0.0, 
-                y: 0.0, 
-                z: 0.0
-            },
+            position,
             transmission_power_dbm: 14.0,
             receiver_sensitivity: -120.0,
             tx_consumption: 0.0,
