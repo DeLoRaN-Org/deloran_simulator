@@ -6,8 +6,7 @@ use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex}, time::Instant};
 
 use super::world::World;
 
-
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq)]
 pub struct NodeConfig {
     pub position: Position,
 
@@ -45,14 +44,13 @@ impl Node {
     pub fn get_position(&self) -> Position {
         self.communicator().config.position
     }
-
-
-    pub async fn tick(&mut self) {
-
-    }
     
     pub fn get_state(&self) -> NodeState {
         self.communicator().state
+    }
+    
+    pub fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
+        t.arrival_stats.rssi > self.communicator().config.receiver_sensitivity
     }
 }
 
@@ -72,6 +70,7 @@ impl DerefMut for Node {
 }
 
 
+#[derive(Debug)]
 pub struct NodeCommunicator {
     sender: Sender<Transmission>,
     receiver: Mutex<Receiver<ReceivedTransmission>>,
@@ -171,6 +170,7 @@ impl LoRaWANCommunicator for NodeCommunicator {
             spreading_factor: self.config.radio_config.spreading_factor,
             coding_rate: self.config.radio_config.code_rate,
             starting_power: self.config.transmission_power_dbm,
+            uplink: true,
             payload: bytes.to_vec(),
         };
 
