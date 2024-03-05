@@ -16,34 +16,34 @@ fn get_sensitivity(transmission: Transmission) -> f64 {
 
     match sf {
         SpreadingFactor::SF7 => match bw {
-            LoRaBandwidth::BW125 => sensitivity = dbmw2mw(-124.0) / 1000.0,
-            LoRaBandwidth::BW250 => sensitivity = dbmw2mw(-122.0) / 1000.0,
-            LoRaBandwidth::BW500 => sensitivity = dbmw2mw(-116.0) / 1000.0,
+            LoRaBandwidth::BW125 => sensitivity = -124.0,
+            LoRaBandwidth::BW250 => sensitivity = -122.0,
+            LoRaBandwidth::BW500 => sensitivity = -116.0,
         },
         SpreadingFactor::SF8 => match bw {
-            LoRaBandwidth::BW125 => sensitivity = dbmw2mw(-127.0) / 1000.0,
-            LoRaBandwidth::BW250 => sensitivity = dbmw2mw(-125.0) / 1000.0,
-            LoRaBandwidth::BW500 => sensitivity = dbmw2mw(-119.0) / 1000.0,
+            LoRaBandwidth::BW125 => sensitivity = -127.0,
+            LoRaBandwidth::BW250 => sensitivity = -125.0,
+            LoRaBandwidth::BW500 => sensitivity = -119.0,
         },
         SpreadingFactor::SF9 => match bw {
-            LoRaBandwidth::BW125 => sensitivity = dbmw2mw(-130.0) / 1000.0,
-            LoRaBandwidth::BW250 => sensitivity = dbmw2mw(-128.0) / 1000.0,
-            LoRaBandwidth::BW500 => sensitivity = dbmw2mw(-122.0) / 1000.0,
+            LoRaBandwidth::BW125 => sensitivity = -130.0,
+            LoRaBandwidth::BW250 => sensitivity = -128.0,
+            LoRaBandwidth::BW500 => sensitivity = -122.0,
         },
         SpreadingFactor::SF10 => match bw {
-            LoRaBandwidth::BW125 => sensitivity = dbmw2mw(-133.0) / 1000.0,
-            LoRaBandwidth::BW250 => sensitivity = dbmw2mw(-130.0) / 1000.0,
-            LoRaBandwidth::BW500 => sensitivity = dbmw2mw(-125.0) / 1000.0,
+            LoRaBandwidth::BW125 => sensitivity = -133.0,
+            LoRaBandwidth::BW250 => sensitivity = -130.0,
+            LoRaBandwidth::BW500 => sensitivity = -125.0,
         },
         SpreadingFactor::SF11 => match bw {
-            LoRaBandwidth::BW125 => sensitivity = dbmw2mw(-135.0) / 1000.0,
-            LoRaBandwidth::BW250 => sensitivity = dbmw2mw(-132.0) / 1000.0,
-            LoRaBandwidth::BW500 => sensitivity = dbmw2mw(-128.0) / 1000.0,
+            LoRaBandwidth::BW125 => sensitivity = -135.0,
+            LoRaBandwidth::BW250 => sensitivity = -132.0,
+            LoRaBandwidth::BW500 => sensitivity = -128.0,
         },
         SpreadingFactor::SF12 => match bw {
-            LoRaBandwidth::BW125 => sensitivity = dbmw2mw(-137.0) / 1000.0,
-            LoRaBandwidth::BW250 => sensitivity = dbmw2mw(-135.0) / 1000.0,
-            LoRaBandwidth::BW500 => sensitivity = dbmw2mw(-129.0) / 1000.0,
+            LoRaBandwidth::BW125 => sensitivity = -137.0,
+            LoRaBandwidth::BW250 => sensitivity = -135.0,
+            LoRaBandwidth::BW500 => sensitivity = -129.0,
         },
     }
     sensitivity

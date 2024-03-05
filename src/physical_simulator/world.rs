@@ -1,11 +1,10 @@
-use std::{sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{sync::Arc, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 
 use lorawan::{device::Device, physical_parameters::{CodeRate, DataRate, LoRaBandwidth, SpreadingFactor}, regional_parameters::region::Region, utils::PrettyHexSlice};
-use lorawan_device::{communicator::{ArrivalStats, Position, ReceivedTransmission, Transmission}, configs::{RadioDeviceConfig, UDPNCConfig}, devices::lorawan_device::LoRaWANDevice};
-use network_controller::network_controller::NetworkController;
+use lorawan_device::{communicator::{ArrivalStats, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::lorawan_device::LoRaWANDevice};
 use tokio::sync::{mpsc::Sender, Mutex, Notify, RwLock};
 
-use super::{network_controller_bridge::NetworkControllerBridge, node::{Node, NodeCommunicator, NodeConfig, NodeState}, path_loss::PathLossModel};
+use super::{network_controller_bridge::{NetworkControllerBridge, NetworkControllerBridgeConfig}, node::{Node, NodeCommunicator, NodeConfig}, path_loss::PathLossModel};
 
 
 
@@ -38,23 +37,48 @@ const _NODE_CONFIG: NodeConfig = NodeConfig {
         data_rate: DataRate::DR5,
         bandwidth: LoRaBandwidth::BW125,
         sample_rate: 1_000_000.0,
-        rx_freq: 990_000_000.0,
-        tx_freq: 1_010_000_000.0,
+        freq: 868_000_000.0,
         rx_chan_id: 0,
         tx_chan_id: 1,
         code_rate: CodeRate::CR4_5
     }
 };
 
+pub enum Entity {
+    Node(Arc<RwLock<Node>>),
+    NetworkController(Arc<RwLock<NetworkControllerBridge>>),
+}
+
+impl Entity {
+    pub async fn get_position(&self) -> Position {
+        match self {
+            Entity::Node(node) => node.read().await.get_position(),
+            Entity::NetworkController(nc) => nc.read().await.get_position(),
+        }
+    }
+    
+    pub async fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
+        match self {
+            Entity::Node(node) => node.read().await.can_receive_transmission(t),
+            Entity::NetworkController(nc) => nc.read().await.can_receive_transmission(t),
+        }
+    }
+}
+
 pub struct World {
     path_loss_model: PathLossModel,
 
-    nodes: Vec<(Arc<RwLock<Node>>, Sender<ReceivedTransmission>)>,
-    network_controllers: Vec<(Arc<RwLock<NetworkControllerBridge>>, Sender<ReceivedTransmission>)>,
+    //nodes: Vec<(Arc<RwLock<Node>>, Sender<ReceivedTransmission>)>,
+    //network_controllers: Vec<(Arc<RwLock<NetworkControllerBridge>>, Sender<ReceivedTransmission>)>,
+    
+    entities: Vec<(Entity, Sender<ReceivedTransmission>)>,
+    
     transmissions_on_air: Arc<Mutex<Vec<Transmission>>>,
  
     sender: Sender<Transmission>,
+
     incoming_message: Arc<Notify>,
+    start_notifier: Arc<Notify>,
 }
 
 impl World {
@@ -62,24 +86,31 @@ impl World {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(100);
         let transmissions_on_air = Arc::new(Mutex::new(Vec::new()));
         let toac = transmissions_on_air.clone();
+        let start_notifier = Arc::new(Notify::new());
         let incoming_message = Arc::new(Notify::new());
+        
+        
         let imc = incoming_message.clone();
+        let snc = start_notifier.clone();
 
         tokio::spawn(async move {
+            snc.notified().await;
             loop {
                 let t = receiver.recv().await.unwrap();
                 toac.lock().await.push(t);
-                imc.notify_one();
+                imc.notify_waiters();
             }
         });
 
         World {
-            nodes: Vec::new(),
-            network_controllers: Vec::new(),
+            //nodes: Vec::new(),
+            //network_controllers: Vec::new(),
+            entities: Vec::new(),
             path_loss_model,
             transmissions_on_air,
             sender,
-            incoming_message
+            incoming_message,
+            start_notifier
         }
     }
 
@@ -121,35 +152,32 @@ impl World {
     pub fn add_node(&mut self, device: Device, config: NodeConfig) {
         let (sender, receiver) = tokio::sync::mpsc::channel(10);
         let node = Node::new(LoRaWANDevice::new(device, NodeCommunicator::new(self.sender.clone(), receiver, config)));
-        let node = Arc::new(RwLock::new(node));
-        self.nodes.push((Arc::clone(&node), sender));
-        tokio::spawn(async move {
-            World::device_routine(node).await;
-        });
+        let node = Entity::Node(Arc::new(RwLock::new(node)));
+        self.entities.push((node, sender));
     }
 
-    pub fn add_network_controller(&mut self, nc: NetworkControllerBridge) { //TODO riguardare un po' sto codice
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(10);
-        let nc_uploader = Arc::new(RwLock::new(nc));
 
-        let nc_receiver = Arc::clone(&nc_uploader);
-        self.network_controllers.push((Arc::clone(&nc_uploader), sender));
-
-        tokio::spawn(async move {
-            loop {
-                let transmission = receiver.recv().await.unwrap();
-                if transmission.arrival_stats.rssi > nc_uploader.read().await.radio_sensitivity() {
-                    nc_uploader.read().await.upload_transmission(&transmission).await.unwrap();
-                }
-            }
-        });
+    pub async fn networ_controller_routine(nc: Arc<RwLock<NetworkControllerBridge>>) {        
+        let nc_receiver = Arc::clone(&nc);
+        nc.write().await.start().await;
         
         tokio::spawn(async move {
             loop {
-                let content = nc_receiver.read().await.wait_for_downlink().await.unwrap();
-                nc_receiver.read().await.send_downlink(content).await.unwrap();
+                let transmission = nc_receiver.read().await.wait_for_uplink().await.unwrap();
+                nc_receiver.write().await.upload_transmission(&transmission).await.unwrap();
             }
         });
+        
+        loop {
+            let content = nc.read().await.wait_for_downlink().await.unwrap();
+            nc.read().await.send_downlink(content).await.unwrap();
+        }
+    }
+
+    pub fn add_network_controller(&mut self, nc_config: NetworkControllerBridgeConfig) {
+        let (sender, receiver) = tokio::sync::mpsc::channel::<ReceivedTransmission>(10);
+        let nc = Entity::NetworkController(Arc::new(RwLock::new(NetworkControllerBridge::new(self.sender.clone(), receiver, nc_config))));
+        self.entities.push((nc, sender));
     }
 
     pub fn path_loss_model(&self) -> &PathLossModel {
@@ -198,7 +226,7 @@ impl World {
         World::timing_collision(t1, t2) && World::direction_collision(t1, t2) && World::channel_collision(t1, t2) && World::sf_collision(t1, t2)
     }
 
-    async fn check_collisions(&mut self) {
+    async fn check_collisions_and_upload(&mut self) {
         let mut transmissions_on_air = self.transmissions_on_air.lock().await;
         for i in  0..transmissions_on_air.len() {
             let t1 = &transmissions_on_air[i];
@@ -206,8 +234,8 @@ impl World {
                 for j in i + 1..transmissions_on_air.len() {
                     let t2 = &transmissions_on_air[j];
                     if World::full_collision_check(t1, t2) {
-                        for (node, sender) in self.nodes.iter_mut() {
-                            let device_position = node.read().await.get_position();
+                        for (entity, sender) in self.entities.iter() {
+                            let device_position = entity.get_position().await;
                             let t1_rssi = t1.starting_power - self.path_loss_model.get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
                             let t2_rssi = t2.starting_power - self.path_loss_model.get_path_loss(device_position.distance(&t2.start_position), t2.frequency);
                             let t1_power_collision = World::power_collision(t1_rssi, t2_rssi);
@@ -220,8 +248,7 @@ impl World {
                                         snr: 0.0,
                                     }
                                 };
-                                let n = node.read().await;
-                                if n.get_state() == NodeState::Receiving && n.can_receive_transmission(&t1_rx) {
+                                if entity.can_receive_transmission(&t1_rx).await {
                                     sender.send(t1_rx).await.unwrap();
                                 }
                             }
@@ -234,9 +261,37 @@ impl World {
     }
 
 
-    pub async fn routine(&mut self) {
+    pub async fn run(&mut self, duration: Option<Duration>) {
+        self.start_notifier.notify_waiters();
+
+        for (entity, _) in self.entities.iter() {
+            match entity {
+                Entity::Node(node) => {
+                    let node_clone = Arc::clone(node);
+                    tokio::spawn(World::device_routine(node_clone));
+                },
+                Entity::NetworkController(nc) => {
+                    let nc_clone = Arc::clone(nc);
+                    tokio::spawn(World::networ_controller_routine(nc_clone));
+                },
+            }
+        }
+        //Entity::NetworkController(nc) => tokio::spawn(World::networ_controller_routine(Arc::clone(nc))),
+        //Entity::Node(node) => tokio::spawn(World::device_routine(Arc::clone(node))),
+
+        let now = Instant::now();
+
         loop {
             self.incoming_message.notified().await;
-            self.check_collisions().await;        }
+            self.check_collisions_and_upload().await;
+
+            if let Some(duration) = duration {
+                if now.elapsed() > duration {
+                    break;
+                }
+            }
+        }
+
+        println!("Simulation ended");
     }
 }

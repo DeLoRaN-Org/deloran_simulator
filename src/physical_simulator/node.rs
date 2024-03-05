@@ -1,7 +1,7 @@
 
 use std::{ops::{Deref, DerefMut}, time::Duration};
 use lorawan::utils::eui::EUI64;
-use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::lorawan_device::LoRaWANDevice};
+use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::{debug_device::{DebugCommunicator, DebugDevice}, lorawan_device::LoRaWANDevice}};
 use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex}, time::Instant};
 
 use super::world::World;
@@ -31,13 +31,13 @@ pub enum NodeState {
 
 #[derive(Debug)]
 pub struct Node {
-    pub device: LoRaWANDevice<NodeCommunicator>,
+    pub device: LoRaWANDevice<DebugCommunicator<NodeCommunicator>>,
 }
 
 impl Node {
     pub fn new(device: LoRaWANDevice<NodeCommunicator>) -> Node {
         Node {
-            device,
+            device: DebugDevice::from(device),
         }
     }
 
@@ -50,13 +50,18 @@ impl Node {
     }
     
     pub fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
-        t.arrival_stats.rssi > self.communicator().config.receiver_sensitivity
+        self.get_state() == NodeState::Receiving &&
+        t.transmission.frequency == self.communicator().config.radio_config.freq &&                    //same frequency
+        t.transmission.bandwidth == self.communicator().config.radio_config.bandwidth &&               //same bandwidth
+        t.transmission.spreading_factor == self.communicator().config.radio_config.spreading_factor && //same spreading factor
+        !t.transmission.uplink &&                                                                      //is downlink
+        t.arrival_stats.rssi > self.communicator().config.receiver_sensitivity                         //signal strength is greater than receiver sensitivity
     }
 }
 
  
 impl Deref for Node {
-    type Target = LoRaWANDevice<NodeCommunicator>;
+    type Target = LoRaWANDevice<DebugCommunicator<NodeCommunicator>>;
 
     fn deref(&self) -> &Self::Target {
         &self.device
@@ -165,10 +170,10 @@ impl LoRaWANCommunicator for NodeCommunicator {
         let t = Transmission {
             start_position: self.config.position,
             start_time: World::get_milliseconds_from_epoch(),
-            frequency: self.config.radio_config.tx_freq,
+            frequency: self.config.radio_config.freq,
             bandwidth: self.config.radio_config.bandwidth,
             spreading_factor: self.config.radio_config.spreading_factor,
-            coding_rate: self.config.radio_config.code_rate,
+            code_rate: self.config.radio_config.code_rate,
             starting_power: self.config.transmission_power_dbm,
             uplink: true,
             payload: bytes.to_vec(),
