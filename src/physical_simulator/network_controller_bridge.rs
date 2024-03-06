@@ -1,7 +1,6 @@
-use std::{collections::HashMap, net::SocketAddr};
+use std::net::SocketAddr;
 
-use lorawan::{lorawan_packet::{payload::Payload, LoRaWANPacket}, utils::PrettyHexSlice};
-use lorawan_device::communicator::{CommunicatorError, LoRaPacket, Position, ReceivedTransmission, Transmission};
+use lorawan_device::communicator::{CommunicatorError, Position, ReceivedTransmission, Transmission};
 use tokio::{net::UdpSocket, sync::{mpsc::{Receiver, Sender}, Mutex}};
 
 use super::{node::NodeConfig, world::World};
