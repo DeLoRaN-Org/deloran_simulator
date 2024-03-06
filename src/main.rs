@@ -1,4 +1,4 @@
-use std::{fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}};
+use std::{fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, time::Duration};
 
 use deloran_simulator::physical_simulator::{network_controller_bridge::NetworkControllerBridgeConfig, node::NodeConfig, path_loss::PathLossModel, world::World};
 use lorawan::{device::{Device, DeviceClass, LoRaWANVersion}, encryption::key::Key, physical_parameters::{CodeRate, DataRate, LoRaBandwidth, SpreadingFactor}, regional_parameters::region::{Region, RegionalParameters}, utils::eui::EUI64};
@@ -55,24 +55,38 @@ fn make_nc_config(nc_addr: SocketAddr, position: Position) -> NetworkControllerB
 }
 
 
+fn random_position_between(x1: f32, x2: f32, y1: f32, y2: f32, z1: f32, z2: f32) -> Position {
+    Position {
+        x: rand::random::<f32>() * (x2 - x1) + x1,
+        y: rand::random::<f32>() * (y2 - y1) + y1,
+        z: rand::random::<f32>() * (z2 - z1) + z1,
+    }
+}
 
-
-fn main() {
-
+#[tokio::main]
+async fn main() {
     let mut w = World::new(PathLossModel::FreeSpace);
 
+    let mut base_frequency = 868_000_000.0;
+
     let file_content = fs::read_to_string("./devices_augmented.csv").unwrap();
-    file_content.split('\n').take(2).enumerate().for_each(|(_i, line)| {
+    file_content.split('\n').take(5).enumerate().for_each(|(_i, line)| {
         let splitted = line.split(',').collect::<Vec<&str>>();
         let dev_eui = EUI64::from_hex(splitted[0]).unwrap();
         let join_eui = EUI64::from_hex(splitted[1]).unwrap();
         let key = Key::from_hex(splitted[2]).unwrap();
         
-
         let d = Device::new(DeviceClass::A, Some(RegionalParameters::new(Region::EU863_870)), dev_eui, join_eui, key, key, LoRaWANVersion::V1_0_4);
-        
-        w.add_node(d, make_device_config(Position { x: 0.0, y: 0.0, z: 0.0 }, SpreadingFactor::SF7, 868_000_000.0, LoRaBandwidth::BW125));
-        w.add_network_controller(make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080)), Position { x: 10.0, y: 10.0, z: 10.0 }));
-        w.add_network_controller(make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080)), Position { x: 100000000.0, y: 100000000.0, z: 100000000.0 }));
+        let position = random_position_between(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+
+        w.add_node(d, make_device_config(position, SpreadingFactor::SF7, base_frequency, LoRaBandwidth::BW125));
+        base_frequency += 250_000.0;
     });
+
+    w.add_network_controller(make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 10.0, y: 10.0, z: 10.0 }));
+    w.add_network_controller(make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81), 9090)), Position { x: 1000.0, y: 1000.0, z: 1000.0 }));
+    w.add_network_controller(make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20), 9090)), Position { x: 100000.0, y: 100000.0, z: 100000.0 }));
+    w.add_network_controller(make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x: 100000000.0, y: 100000000.0, z: 100000000.0 }));
+
+    w.run(Some(Duration::from_secs(10))).await;
 }

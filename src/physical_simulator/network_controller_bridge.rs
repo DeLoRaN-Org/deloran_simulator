@@ -19,7 +19,6 @@ pub struct NetworkControllerBridge {
     sender: Sender<Transmission>,
     receiver: Mutex<Receiver<ReceivedTransmission>>,
     udp_socket: Option<UdpSocket>,
-    last_uplink_received: HashMap<String, ReceivedTransmission>
 }
 
 impl NetworkControllerBridge {
@@ -30,7 +29,6 @@ impl NetworkControllerBridge {
             sender,
             udp_socket: None,
             receiver: Mutex::new(receiver),
-            last_uplink_received: HashMap::new()
         }
     }
 
@@ -49,42 +47,25 @@ impl NetworkControllerBridge {
 }
 
 impl NetworkControllerBridge {
-    pub async fn wait_for_uplink(&self) -> Result<ReceivedTransmission, CommunicatorError> {
+    pub async fn wait_and_forward_uplink(&self) -> Result<(), CommunicatorError> {
         let mut receiver = self.receiver.lock().await;
-        receiver.recv().await.ok_or(CommunicatorError::Radio("Receiver channel closed unexpectedly".to_string()))
-    }
-
-    pub async fn upload_transmission(&mut self, transmission: &ReceivedTransmission) -> Result<(), CommunicatorError> {
-        self.udp_socket.as_ref().unwrap().send(&transmission.transmission.payload).await.unwrap();
-        let packet = LoRaWANPacket::from_bytes(&transmission.transmission.payload, None, true).unwrap(); //cannot fail without context
-        let key = match packet.payload() {
-            Payload::JoinRequest(join) => join.dev_eui().to_string(),
-            Payload::MACPayload(mc) => PrettyHexSlice(&mc.fhdr().dev_addr()).to_string(),
-            _ => unreachable!(),
-        };
-        self.last_uplink_received.insert(key, transmission.clone());
+        let received_transmission = receiver.recv().await.ok_or(CommunicatorError::Radio("Receiver channel closed unexpectedly".to_string()))?;
+        let bytes = serde_json::to_vec(&received_transmission).unwrap();
+        self.udp_socket.as_ref().unwrap().send(&bytes).await.map_err(|e| CommunicatorError::Radio(e.to_string()))?;
         Ok(())
     }
     
-    pub async fn wait_for_downlink(&self) -> Result<Vec<u8>, CommunicatorError> {
+    pub async fn wait_and_forward_downlink(&self) -> Result<(), CommunicatorError> {
         let mut buffer = [0u8; 256];
         let size = self.udp_socket.as_ref().unwrap().recv(&mut buffer).await.unwrap();
-        Ok(buffer[..size].to_vec())
-    }
+        let transmission_bytes = &buffer[..size];
+        let mut transmission = serde_json::from_slice::<Transmission>(transmission_bytes).map_err(|e| CommunicatorError::Radio(e.to_string()))?;
 
-    pub async fn send_downlink(&self, payload: Vec<u8>) -> Result<(), CommunicatorError> {
-        self.sender.send(Transmission {
-            payload,
-            start_time: World::get_milliseconds_from_epoch(),
-            start_position: self.node_config.position,
-            frequency: self.node_config.radio_config.freq,
-            bandwidth: self.node_config.radio_config.bandwidth,
-            spreading_factor: self.node_config.radio_config.spreading_factor,
-            code_rate: self.node_config.radio_config.code_rate,
-            starting_power: self.node_config.transmission_power_dbm,
-            uplink: false,
-        }).await.unwrap();
-        Ok(())
+        transmission.start_position = self.node_config.position;
+        transmission.start_time = World::now();
+        transmission.starting_power = self.node_config.transmission_power_dbm;
+
+        self.sender.send(transmission).await.map_err(|_| CommunicatorError::Radio("Error sending message to world".to_string()))
     }
 
     pub async fn start(&mut self) {

@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
+use std::{collections::HashSet, sync::Arc, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 
 use lorawan::{device::Device, physical_parameters::{CodeRate, DataRate, LoRaBandwidth, SpreadingFactor}, regional_parameters::region::Region, utils::PrettyHexSlice};
 use lorawan_device::{communicator::{ArrivalStats, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::lorawan_device::LoRaWANDevice};
@@ -6,18 +6,16 @@ use tokio::sync::{mpsc::Sender, Mutex, Notify, RwLock};
 
 use super::{network_controller_bridge::{NetworkControllerBridge, NetworkControllerBridgeConfig}, node::{Node, NodeCommunicator, NodeConfig}, path_loss::PathLossModel};
 
+//const NUM_DEVICES: usize = 8000;
+//const DEVICES_TO_SKIP: usize = 0;
 
-
-const NUM_DEVICES: usize = 8000;
 const NUM_PACKETS: usize = 100;
-const RANDOM_JOIN_DELAY:   u64 = 18000;
-const FIXED_JOIN_DELAY: u64 = 600;
-const FIXED_PACKET_DELAY: u64 = 600;
-const RANDOM_PACKET_DELAY: u64 = 17400;
+const RANDOM_JOIN_DELAY:   u64 = 60;
+const FIXED_JOIN_DELAY: u64 = 60;
+const FIXED_PACKET_DELAY: u64 = 60;
+const RANDOM_PACKET_DELAY: u64 = 60;
 const _CONFIRMED_AVERAGE_SEND: u8 = 10;
-const DEVICES_TO_SKIP: usize = 0;
-const JUST_CREATE_DEVICE: bool = false;
-const STARTING_DEV_NONCE: u32 = 30;
+const STARTING_DEV_NONCE: u32 = 0;
 
 const _NODE_CONFIG: NodeConfig = NodeConfig {
     position: Position {
@@ -103,8 +101,6 @@ impl World {
         });
 
         World {
-            //nodes: Vec::new(),
-            //network_controllers: Vec::new(),
             entities: Vec::new(),
             path_loss_model,
             transmissions_on_air,
@@ -114,27 +110,30 @@ impl World {
         }
     }
 
-    pub fn get_milliseconds_from_epoch() -> u128 {
+    pub fn now() -> u128 {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
     }
 
     pub async fn device_routine(node: Arc<RwLock<Node>>) {
         node.write().await.set_dev_nonce(STARTING_DEV_NONCE);
         let dev_eui = *node.read().await.dev_eui();
+
         let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY;
         tokio::time::sleep(Duration::from_secs(FIXED_JOIN_DELAY + sleep_time)).await;
+
         if let Err(e) = node.write().await.send_join_request().await {
             panic!("Error joining: {e:?}");
         };
+
         println!("Initialized: {}", PrettyHexSlice(&*dev_eui));
         tokio::time::sleep(Duration::from_secs(FIXED_JOIN_DELAY + RANDOM_JOIN_DELAY - sleep_time)).await;            
+        
         for i in 0..NUM_PACKETS {
             let sleep_time = rand::random::<u64>() % RANDOM_PACKET_DELAY;
             tokio::time::sleep(Duration::from_secs(FIXED_PACKET_DELAY + sleep_time)).await;
             //let before = Instant::now();                
             
-            let confirmed = true;
-            node.write().await.send_uplink(Some(format!("###  {}confirmed {i} message  ###", if confirmed {"un"} else {""}).as_bytes()), confirmed, Some(1), None).await.unwrap();
+            node.write().await.send_uplink(Some(format!("###  confirmed {i} message  ###").as_bytes()), true, Some(1), None).await.unwrap();
             //let rtt = before.elapsed().as_millis();
             println!("Device {} sent and received {i}-th message", PrettyHexSlice(&*dev_eui));
 
@@ -163,14 +162,12 @@ impl World {
         
         tokio::spawn(async move {
             loop {
-                let transmission = nc_receiver.read().await.wait_for_uplink().await.unwrap();
-                nc_receiver.write().await.upload_transmission(&transmission).await.unwrap();
+                nc_receiver.read().await.wait_and_forward_uplink().await.unwrap()
             }
         });
         
         loop {
-            let content = nc.read().await.wait_for_downlink().await.unwrap();
-            nc.read().await.send_downlink(content).await.unwrap();
+            nc.read().await.wait_and_forward_downlink().await.unwrap()
         }
     }
 
@@ -200,9 +197,9 @@ impl World {
     }
 
     fn channel_collision(t1: &Transmission, t2: &Transmission) -> bool {
-        if t1.frequency == 500_000.0 || t2.frequency == 500_000.0 {
+        if t1.bandwidth == LoRaBandwidth::BW500 || t2.bandwidth == LoRaBandwidth::BW500 {
             (t1.frequency - t2.frequency).abs() <= 120_000.0
-        } else if t1.frequency == 250_000.0 || t2.frequency == 250_000.0 {
+        } else if t1.bandwidth == LoRaBandwidth::BW250 || t2.bandwidth == LoRaBandwidth::BW250 {
             (t1.frequency - t2.frequency).abs() <= 60_000.0
         } else {
             (t1.frequency - t2.frequency).abs() <= 30_000.0
@@ -214,11 +211,13 @@ impl World {
     }
     
     fn direction_collision(t1: &Transmission, t2: &Transmission) -> bool {
-        t1.uplink == t2.uplink
+        t1.uplink == t2.uplink //it should be iq check (uplink and downlink have inverted iq so they dont collide and gateways dont receive each other)
     }
 
-    fn power_collision(t1_rssi: f32, t2_rssi: f32) -> bool {
+    fn power_collision(t1: &Transmission, t2: &Transmission, device_position: Position, path_loss_model: &PathLossModel) -> bool {
         let power_threshold = 6.0;  //dB, it is hardcoded both in lorasim and flora
+        let t1_rssi = t1.starting_power - path_loss_model.get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
+        let t2_rssi = t2.starting_power - path_loss_model.get_path_loss(device_position.distance(&t2.start_position), t2.frequency);
         (t1_rssi - t2_rssi).abs() < power_threshold || t1_rssi - t2_rssi < power_threshold
     }
 
@@ -227,37 +226,62 @@ impl World {
     }
 
     async fn check_collisions_and_upload(&mut self) {
-        let mut transmissions_on_air = self.transmissions_on_air.lock().await;
-        for i in  0..transmissions_on_air.len() {
-            let t1 = &transmissions_on_air[i];
-            if t1.ended() { //if transmission ended
-                for j in i + 1..transmissions_on_air.len() {
-                    let t2 = &transmissions_on_air[j];
-                    if World::full_collision_check(t1, t2) {
-                        for (entity, sender) in self.entities.iter() {
-                            let device_position = entity.get_position().await;
-                            let t1_rssi = t1.starting_power - self.path_loss_model.get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
-                            let t2_rssi = t2.starting_power - self.path_loss_model.get_path_loss(device_position.distance(&t2.start_position), t2.frequency);
-                            let t1_power_collision = World::power_collision(t1_rssi, t2_rssi);
-                            if !t1_power_collision {
-                                let t1_rx: ReceivedTransmission = ReceivedTransmission {
-                                    transmission: t1.clone(),
-                                    arrival_stats: ArrivalStats {
-                                        time: World::get_milliseconds_from_epoch(),
-                                        rssi: t1_rssi,
-                                        snr: 0.0,
-                                    }
-                                };
-                                if entity.can_receive_transmission(&t1_rx).await {
-                                    sender.send(t1_rx).await.unwrap();
-                                }
-                            }
+        let ended_transmissions = self.transmissions_on_air.lock().await.iter().filter(|t| t.ended()).cloned().collect::<Vec<Transmission>>();  
+        let mut potentially_collided_transmissions = Vec::new();
+
+        for (i, t1) in ended_transmissions.iter().enumerate() {
+            let mut collided = false;
+            for t2 in ended_transmissions.iter().skip(i + 1) {
+                if World::full_collision_check(t1, t2) {
+                    potentially_collided_transmissions.push((t1.clone(), t2.clone()));
+                    collided = true;
+                }
+            }
+
+            if !collided {
+                for (entity, sender) in self.entities.iter() {
+                    let device_position = entity.get_position().await;
+                    let t1_rssi = t1.starting_power - self.path_loss_model.get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
+                    let t1_rx: ReceivedTransmission = ReceivedTransmission {
+                        transmission: t1.clone(),
+                        arrival_stats: ArrivalStats {
+                            time: World::now(),
+                            rssi: t1_rssi,
+                            snr: 0.0,
                         }
+                    };
+                    if entity.can_receive_transmission(&t1_rx).await {
+                        sender.send(t1_rx).await.unwrap();
                     }
                 }
             }
         }
-        transmissions_on_air.retain(|t| !t.ended());
+
+        for (entity, sender) in self.entities.iter() {
+            let mut received = HashSet::new();
+            for (t1, t2) in potentially_collided_transmissions.iter() {
+                let device_position = entity.get_position().await;
+                if !World::power_collision(t1, t2, device_position, &self.path_loss_model) {
+                    let t1_rssi = t1.starting_power - self.path_loss_model.get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
+                    let t1_rx: ReceivedTransmission = ReceivedTransmission {
+                        transmission: t1.clone(),
+                        arrival_stats: ArrivalStats {
+                            time: World::now(),
+                            rssi: t1_rssi,
+                            snr: 0.0,
+                        }
+                    };
+                    if entity.can_receive_transmission(&t1_rx).await {
+                        received.insert(t1_rx);
+                    }
+                }
+            }
+
+            for t in received.into_iter() {
+                sender.send(t).await.unwrap();
+            }
+        }
+        self.transmissions_on_air.lock().await.retain(|t| !t.ended());
     }
 
 

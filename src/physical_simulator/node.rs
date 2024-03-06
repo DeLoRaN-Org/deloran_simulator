@@ -137,19 +137,19 @@ impl NodeCommunicator {
         &self.config
     }
 
-    pub async fn send_uplink(&mut self, bytes: &[u8]) -> Result<(), CommunicatorError> {
-        self.change_state(NodeState::Transmitting);
-        let ret = <Self as LoRaWANCommunicator>::send_uplink(self, bytes, None, None).await;
-        self.change_state(NodeState::Idle);
-        ret
-    }
-    
-    pub async fn receive_downlink(&mut self, timeout: Option<Duration>) -> Result<ReceivedTransmission, CommunicatorError> {
-        self.change_state(NodeState::Receiving);
-        let ret = <Self as LoRaWANCommunicator>::receive_downlink(self, timeout).await?;
-        self.change_state(NodeState::Idle);
-        ret.into_iter().next().ok_or(CommunicatorError::Radio("No downlink received".to_owned()))
-    }
+    //pub async fn send_uplink(&mut self, bytes: &[u8]) -> Result<(), CommunicatorError> {
+    //    self.change_state(NodeState::Transmitting);
+    //    let ret = <Self as LoRaWANCommunicator>::send(self, bytes, None, None).await;
+    //    self.change_state(NodeState::Idle);
+    //    ret
+    //}
+    //
+    //pub async fn receive_downlink(&mut self, timeout: Option<Duration>) -> Result<ReceivedTransmission, CommunicatorError> {
+    //    self.change_state(NodeState::Receiving);
+    //    let ret = <Self as LoRaWANCommunicator>::receive(self, timeout).await?;
+    //    self.change_state(NodeState::Idle);
+    //    ret.into_iter().next().ok_or(CommunicatorError::Radio("No downlink received".to_owned()))
+    //}
 }
 
 
@@ -161,7 +161,7 @@ impl LoRaWANCommunicator for NodeCommunicator {
         todo!()
     }
     
-    async fn send_uplink(
+    async fn send(
         &self,
         bytes: &[u8],
         _src: Option<EUI64>,
@@ -169,7 +169,7 @@ impl LoRaWANCommunicator for NodeCommunicator {
     ) -> Result<(), CommunicatorError> {
         let t = Transmission {
             start_position: self.config.position,
-            start_time: World::get_milliseconds_from_epoch(),
+            start_time: World::now(),
             frequency: self.config.radio_config.freq,
             bandwidth: self.config.radio_config.bandwidth,
             spreading_factor: self.config.radio_config.spreading_factor,
@@ -185,7 +185,7 @@ impl LoRaWANCommunicator for NodeCommunicator {
         ret
     }
 
-    async fn receive_downlink(
+    async fn receive(
         &self,
         timeout: Option<Duration>,
     ) -> Result<Vec<ReceivedTransmission>, CommunicatorError> {
