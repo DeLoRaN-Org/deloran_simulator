@@ -1,16 +1,16 @@
 use lorawan::physical_parameters::{LoRaBandwidth, SpreadingFactor};
 use lorawan_device::communicator::Transmission;
 
-fn dbmw2mw(dbm: f64) -> f64 {
-    // Conversion formula: P(mW) = 1mW * 10^(P(dBm)/10)
-    10f64.powf(dbm / 10.0)
-}
+//fn dbmw2mw(dbm: f64) -> f64 {
+//    // Conversion formula: P(mW) = 1mW * 10^(P(dBm)/10)
+//    10f64.powf(dbm / 10.0)
+//}
 
 
 //function returns sensitivity -- according to LoRa documentation, it changes with LoRa parameters
 //Sensitivity values from Semtech SX1272/73 datasheet, table 10, Rev 3.1, March 2017
-fn get_sensitivity(transmission: Transmission) -> f64 {
-    let sensitivity;
+pub fn get_sensitivity(transmission: &Transmission) -> f32 {
+    /*let sensitivity;
     let sf = transmission.spreading_factor;
     let bw = transmission.bandwidth;
 
@@ -46,5 +46,6 @@ fn get_sensitivity(transmission: Transmission) -> f64 {
             LoRaBandwidth::BW500 => sensitivity = -129.0,
         },
     }
-    sensitivity
+    //sensitivity*/
+    -120.0
 }

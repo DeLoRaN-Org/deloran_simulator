@@ -1,24 +1,50 @@
 
-use std::{ops::{Deref, DerefMut}, time::Duration};
-use lorawan::utils::eui::EUI64;
+use std::{fs::OpenOptions, ops::{Deref, DerefMut}, sync::Arc, time::Duration};
+use lorawan::utils::{eui::EUI64, PrettyHexSlice};
 use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::{debug_device::{DebugCommunicator, DebugDevice}, lorawan_device::LoRaWANDevice}};
-use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex}, time::Instant};
+use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}, time::Instant};
 
-use super::world::World;
+use crate::physical_simulator::world::{FIXED_JOIN_DELAY, FIXED_PACKET_DELAY, LOGGER, NUM_PACKETS, RANDOM_JOIN_DELAY, RANDOM_PACKET_DELAY};
 
-#[derive(Clone, Debug, Copy, PartialEq)]
+use super::{utils::get_sensitivity, world::World};
+use std::io::Write;
+
+#[derive(Clone, Debug)]
 pub struct NodeConfig {
     pub position: Position,
 
-    pub transmission_power_dbm: f32,  //14 dbm for indoor devices and 27dbm for outdoor devices
-    pub receiver_sensitivity: f32,    //-137 dbm for SF12 and 125kHz --> generato automaticamente lol      
+    pub transmission_power_dbm: f32,  //14 dbm standard, and 27dbm is the maximum allowed
+    pub receiver_sensitivity: f32,    
 
     pub tx_consumption: f32,
     pub rx_consumption: f32,
     pub idle_consumption: f32,
     pub sleep_consumption: f32,
 
+    pub node_state: Arc<Mutex<NodeState>>,
     pub radio_config: RadioDeviceConfig,
+}
+
+impl PartialEq for NodeConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.position == other.position && self.radio_config == other.radio_config
+    }
+}
+
+impl NodeConfig {
+    pub async fn get_state(&self) -> NodeState {
+        *self.node_state.lock().await
+    }
+
+    pub async fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
+        self.position != t.transmission.start_position &&
+        self.get_state().await == NodeState::Receiving &&
+        !t.transmission.uplink &&                                                //is downlink
+        t.transmission.frequency == self.radio_config.freq &&                    //same frequency
+        t.transmission.bandwidth == self.radio_config.bandwidth &&               //same bandwidth
+        t.transmission.spreading_factor == self.radio_config.spreading_factor && //same spreading factor
+        t.arrival_stats.rssi > get_sensitivity(&t.transmission)                  //signal strength is greater than receiver sensitivity
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -31,12 +57,14 @@ pub enum NodeState {
 
 #[derive(Debug)]
 pub struct Node {
+    pub node_id: u32,
     pub device: LoRaWANDevice<DebugCommunicator<NodeCommunicator>>,
 }
 
 impl Node {
-    pub fn new(device: LoRaWANDevice<NodeCommunicator>) -> Node {
+    pub fn new(node_id: u32, device: LoRaWANDevice<NodeCommunicator>) -> Node {
         Node {
+            node_id,
             device: DebugDevice::from(device),
         }
     }
@@ -45,17 +73,48 @@ impl Node {
         self.communicator().config.position
     }
     
-    pub fn get_state(&self) -> NodeState {
-        self.communicator().state
+    pub async fn get_state(&self) -> NodeState {
+        self.communicator().config.get_state().await
     }
     
-    pub fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
-        self.get_state() == NodeState::Receiving &&
-        t.transmission.frequency == self.communicator().config.radio_config.freq &&                    //same frequency
-        t.transmission.bandwidth == self.communicator().config.radio_config.bandwidth &&               //same bandwidth
-        t.transmission.spreading_factor == self.communicator().config.radio_config.spreading_factor && //same spreading factor
-        !t.transmission.uplink &&                                                                      //is downlink
-        t.arrival_stats.rssi > self.communicator().config.receiver_sensitivity                         //signal strength is greater than receiver sensitivity
+    //pub async fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
+    //    self.get_position() != t.transmission.start_position &&
+    //    self.get_state().await == NodeState::Receiving &&
+    //    t.transmission.frequency == self.communicator().config.radio_config.freq &&                    //same frequency
+    //    t.transmission.bandwidth == self.communicator().config.radio_config.bandwidth &&               //same bandwidth
+    //    t.transmission.spreading_factor == self.communicator().config.radio_config.spreading_factor && //same spreading factor
+    //    !t.transmission.uplink &&                                                                      //is downlink
+    //    t.arrival_stats.rssi > get_sensitivity(&t.transmission)                                        //signal strength is greater than receiver sensitivity
+    //}
+
+    pub async fn run(&mut self) {
+        let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY;
+        if let Err(e) = self.join(Some(10), Some(Duration::from_secs(FIXED_JOIN_DELAY + sleep_time))).await {
+            panic!("Error joining: {e:?}");
+        };
+
+        println!("Initialized: {}", PrettyHexSlice(&**self.dev_eui()));
+        tokio::time::sleep(Duration::from_secs(FIXED_JOIN_DELAY + RANDOM_JOIN_DELAY - sleep_time)).await;            
+        
+        for i in 0..NUM_PACKETS {
+            let sleep_time = rand::random::<u64>() % RANDOM_PACKET_DELAY;
+            tokio::time::sleep(Duration::from_secs(FIXED_PACKET_DELAY + sleep_time)).await;
+            
+            let before = Instant::now();                
+            match self.send_uplink(Some(format!("###  confirmed {i} message  ###").as_bytes()), true, Some(1), None).await {
+                Ok(_) => {
+                    println!("Device {} sent and received {i}-th message", PrettyHexSlice(&**self.dev_eui()));
+                    let rtt = before.elapsed().as_millis();
+                    if true {
+                        LOGGER.write(&format!("{},{}", self.dev_eui(), rtt))
+                    }
+                },
+                Err(e) => {
+                    println!("Error sending confirmed message: {e:?}");
+                },
+            }
+
+        }
     }
 }
 
@@ -78,10 +137,9 @@ impl DerefMut for Node {
 #[derive(Debug)]
 pub struct NodeCommunicator {
     sender: Sender<Transmission>,
-    receiver: Mutex<Receiver<ReceivedTransmission>>,
+    receiver: RwLock<Receiver<ReceivedTransmission>>,
 
     config: NodeConfig,
-    state: NodeState,
     last_status_change: Instant,
 
     tx_time: Duration,
@@ -94,9 +152,8 @@ impl NodeCommunicator {
     pub fn new(sender: Sender<Transmission>, receiver: Receiver<ReceivedTransmission>,  config: NodeConfig) -> NodeCommunicator {
     NodeCommunicator {
             sender,
-            receiver: Mutex::new(receiver),
+            receiver: RwLock::new(receiver),
             config,
-            state: NodeState::Idle,
             last_status_change: Instant::now(),
             tx_time: Duration::from_secs(0),
             rx_time: Duration::from_secs(0),
@@ -105,51 +162,33 @@ impl NodeCommunicator {
         }
     }
 
-    pub fn calculate_signal_strength(&self, distance: f32, path_loss_exponent: f32, constant: f32) -> f32 {
-        self.config.transmission_power_dbm - 10.0 * path_loss_exponent * distance.log10() - constant
-    }
+    //pub fn calculate_energy_consumption(&self, duration: Duration) -> f32 {
+    //    let seconds = duration.as_secs_f32();
+    //    let energy_consumption = match self.state {
+    //        NodeState::Idle => self.config.idle_consumption,
+    //        NodeState::Sleep => self.config.sleep_consumption,
+    //        NodeState::Transmitting => self.config.tx_consumption,
+    //        NodeState::Receiving => self.config.rx_consumption,
+    //    };
+    //    energy_consumption * seconds
+    //}
 
-    pub fn calculate_energy_consumption(&self, duration: Duration) -> f32 {
-        let seconds = duration.as_secs_f32();
-        let energy_consumption = match self.state {
-            NodeState::Idle => self.config.idle_consumption,
-            NodeState::Sleep => self.config.sleep_consumption,
-            NodeState::Transmitting => self.config.tx_consumption,
-            NodeState::Receiving => self.config.rx_consumption,
-        };
-        energy_consumption * seconds
-    }
-
-    pub fn change_state(&mut self, new_state: NodeState) {
-        let now = Instant::now();
-        let duration = now.duration_since(self.last_status_change);
-        match self.state {
-            NodeState::Idle => self.idle_time += duration,
-            NodeState::Sleep => self.sleep_time += duration,
-            NodeState::Transmitting => self.tx_time += duration,
-            NodeState::Receiving => self.rx_time += duration,
-        }
-        self.state = new_state;
-        self.last_status_change = Instant::now();
-    }
+    //pub fn change_state(&mut self, new_state: NodeState) {
+    //    let now = Instant::now();
+    //    let duration = now.duration_since(self.last_status_change);
+    //    match self.state {
+    //        NodeState::Idle => self.idle_time += duration,
+    //        NodeState::Sleep => self.sleep_time += duration,
+    //        NodeState::Transmitting => self.tx_time += duration,
+    //        NodeState::Receiving => self.rx_time += duration,
+    //    }
+    //    self.state = new_state;
+    //    self.last_status_change = Instant::now();
+    //}
 
     pub fn get_config(&self) -> &NodeConfig {
         &self.config
     }
-
-    //pub async fn send_uplink(&mut self, bytes: &[u8]) -> Result<(), CommunicatorError> {
-    //    self.change_state(NodeState::Transmitting);
-    //    let ret = <Self as LoRaWANCommunicator>::send(self, bytes, None, None).await;
-    //    self.change_state(NodeState::Idle);
-    //    ret
-    //}
-    //
-    //pub async fn receive_downlink(&mut self, timeout: Option<Duration>) -> Result<ReceivedTransmission, CommunicatorError> {
-    //    self.change_state(NodeState::Receiving);
-    //    let ret = <Self as LoRaWANCommunicator>::receive(self, timeout).await?;
-    //    self.change_state(NodeState::Idle);
-    //    ret.into_iter().next().ok_or(CommunicatorError::Radio("No downlink received".to_owned()))
-    //}
 }
 
 
@@ -180,8 +219,12 @@ impl LoRaWANCommunicator for NodeCommunicator {
         };
 
         let toa = t.time_on_air();
+        *self.config.node_state.lock().await = NodeState::Transmitting;        
+        
         let ret = self.sender.send(t).await.map_err(|_| CommunicatorError::Radio("Error sending message to channel".to_owned()));
         tokio::time::sleep(Duration::from_millis(toa as u64)).await;
+        
+        *self.config.node_state.lock().await = NodeState::Idle;
         ret
     }
 
@@ -189,13 +232,17 @@ impl LoRaWANCommunicator for NodeCommunicator {
         &self,
         timeout: Option<Duration>,
     ) -> Result<Vec<ReceivedTransmission>, CommunicatorError> {
-        let mut receiver = self.receiver.lock().await;
+        
+        *self.config.node_state.lock().await = NodeState::Receiving;
+        
         let ret = if let Some(timeout) = timeout {
-            tokio::time::timeout(timeout, receiver.recv()).await
+            tokio::time::timeout(timeout, self.receiver.write().await.recv()).await
         } else {
-            Ok(receiver.recv().await)
+            Ok(self.receiver.write().await.recv().await)
         };
         
+        *self.config.node_state.lock().await = NodeState::Idle;
+
         if let Ok(Some(v)) = ret {
             Ok(vec![v])
         } else {

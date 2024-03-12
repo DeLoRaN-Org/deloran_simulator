@@ -223,6 +223,7 @@ name = "deloran_simulator"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "lazy_static",
  "lorawan",
  "lorawan_device",
  "network_controller",

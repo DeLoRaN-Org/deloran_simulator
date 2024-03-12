@@ -7,7 +7,7 @@ C: a constant that depends on the environment
 */
 
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Copy)]
 pub enum PathLossModel {
     #[default]
     FreeSpace,
