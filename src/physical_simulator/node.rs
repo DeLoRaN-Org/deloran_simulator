@@ -2,9 +2,10 @@
 use std::{ops::{Deref, DerefMut}, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use lorawan::utils::{eui::EUI64, PrettyHexSlice};
 use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::{debug_device::{DebugCommunicator, DebugDevice}, lorawan_device::LoRaWANDevice}};
+use rand::distributions::Distribution;
 use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}, time::Instant};
 
-use crate::{physical_simulator::world::{FIXED_JOIN_DELAY, LOGGER, NUM_PACKETS, RANDOM_JOIN_DELAY}, traffic_distribution::LoEDDistribution};
+use crate::{physical_simulator::world::{FIXED_JOIN_DELAY, LOGGER, NUM_PACKETS, RANDOM_JOIN_DELAY}, traffic_models::TrafficModel};
 
 use super::{utils::get_sensitivity, world::World};
 
@@ -58,13 +59,15 @@ pub enum NodeState {
 pub struct Node {
     pub node_id: u32,
     pub device: LoRaWANDevice<DebugCommunicator<NodeCommunicator>>,
+    pub traffic_model: TrafficModel,
 }
 
 impl Node {
-    pub fn new(node_id: u32, device: LoRaWANDevice<NodeCommunicator>) -> Node {
+    pub fn new(node_id: u32, device: LoRaWANDevice<NodeCommunicator>, traffic_model: TrafficModel) -> Node {
         Node {
             node_id,
             device: DebugDevice::from(device),
+            traffic_model
         }
     }
 
@@ -76,23 +79,14 @@ impl Node {
         self.communicator().config.get_state().await
     }
     
-    //pub async fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
-    //    self.get_position() != t.transmission.start_position &&
-    //    self.get_state().await == NodeState::Receiving &&
-    //    t.transmission.frequency == self.communicator().config.radio_config.freq &&                    //same frequency
-    //    t.transmission.bandwidth == self.communicator().config.radio_config.bandwidth &&               //same bandwidth
-    //    t.transmission.spreading_factor == self.communicator().config.radio_config.spreading_factor && //same spreading factor
-    //    !t.transmission.uplink &&                                                                      //is downlink
-    //    t.arrival_stats.rssi > get_sensitivity(&t.transmission)                                        //signal strength is greater than receiver sensitivity
-    //}
+    pub async fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
+        self.communicator().config.can_receive_transmission(t).await
+    }
 
     pub async fn run(&mut self, running: Arc<AtomicBool>) {
-        //let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + FIXED_JOIN_DELAY;
-        //let distribution = SPVDistribution::default();
-        
+
         for i in 0..50 {
-            //let sleep_time = distribution.sample(&mut rand::thread_rng()) + rand::random::<f64>() * 30.0 + rand::random::<f64>() * 30.0;
-            let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + if i == 0 { 0 } else { FIXED_JOIN_DELAY };
+            let sleep_time = self.traffic_model.sample(&mut rand::thread_rng());
             println!("Sleeping for {sleep_time:?}");
             tokio::time::sleep(Duration::from_secs_f64(sleep_time as f64)).await;
             let before = Instant::now();                
@@ -116,11 +110,6 @@ impl Node {
         let mut successes = 0;
 
         println!("Initialized: {}", PrettyHexSlice(self.session().unwrap().network_context().dev_addr()));
-
-        //let device_json = serde_json::to_string(&*self.device).unwrap();
-        //LOGGER_DEVICES.write(&device_json);
-        
-        //tokio::time::sleep(Duration::from_secs(FIXED_JOIN_DELAY + RANDOM_JOIN_DELAY - sleep_time)).await;            
 
         for i in 0..NUM_PACKETS {
             if !running.load(Ordering::Relaxed) {
@@ -233,7 +222,7 @@ impl LoRaWANCommunicator for NodeCommunicator {
     type Config=NodeConfig;
 
     async fn from_config(_config: &Self::Config) -> Result<Self, CommunicatorError> {
-        todo!()
+        unimplemented!("Can't create nodecommunicator from config, it needs a sender and a receiver")
     }
     
     async fn send(

@@ -15,7 +15,7 @@ use tokio::sync::{
     Mutex, Notify,
 };
 
-use crate::logger::Logger;
+use crate::{logger::Logger, traffic_models::TrafficModel};
 
 use super::{
     network_controller_bridge::{NetworkControllerBridge, NetworkControllerBridgeConfig},
@@ -151,7 +151,7 @@ impl World {
         node.run(running).await;
     }
 
-    pub fn add_node(&mut self, device: Device, config: NodeConfig) {
+    pub fn add_node(&mut self, device: Device, config: NodeConfig, traffic_model: TrafficModel) {
         let (sender, receiver) = mpsc::channel(1000);
 
         let c2 = config.clone();
@@ -162,6 +162,7 @@ impl World {
                 device,
                 NodeCommunicator::new(self.sender.clone(), receiver, config),
             ),
+            traffic_model
         );
         self.entities.push(Entity::Node(node));
         self.node_counter += 1;
@@ -259,10 +260,7 @@ impl World {
     async fn check_collisions_and_upload(&mut self) {
         let ended_transmissions = {
             let mut transmissions = self.transmissions_on_air.lock().await;
-            let (ended_transmissions, not_endend_transmission): (
-                Vec<Transmission>,
-                Vec<Transmission>,
-            ) = transmissions.iter().cloned().partition(|t| t.ended());
+            let (ended_transmissions, not_endend_transmission) = transmissions.iter().cloned().partition(|t| t.ended());
             *transmissions = not_endend_transmission;
             ended_transmissions
         };
@@ -367,9 +365,7 @@ impl World {
                 }
             })
         }
-        //Entity::NetworkController(nc) => tokio::spawn(World::networ_controller_routine(Arc::clone(nc))),
-        //Entity::Node(node) => tokio::spawn(World::device_routine(Arc::clone(node))),
-
+        
         let now = Instant::now();
 
         let ignore = Arc::new(AtomicBool::new(false));
@@ -415,7 +411,7 @@ impl World {
 }
 
 #[test]
-fn testfn() {
+fn simulated_transmission() {
     let t1 = Transmission {
         start_position: Position {
             x: 100000.0,
@@ -442,8 +438,7 @@ fn testfn() {
         z: 0.0,
     };
 
-    let rssi = t1.starting_power
-        - path_loss.get_path_loss(t1.start_position.distance(&origin), t1.frequency);
+    let rssi = t1.starting_power - path_loss.get_path_loss(t1.start_position.distance(&origin), t1.frequency);
 
     println!("RSSI: {}", rssi);
 }

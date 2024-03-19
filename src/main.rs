@@ -1,6 +1,6 @@
 use std::{fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, sync::Arc, time::Duration};
 
-use deloran_simulator::physical_simulator::{network_controller_bridge::NetworkControllerBridgeConfig, node::{NodeConfig, NodeState}, path_loss::PathLossModel, world::{World, NUM_DEVICES}};
+use deloran_simulator::{physical_simulator::{network_controller_bridge::NetworkControllerBridgeConfig, node::{NodeConfig, NodeState}, path_loss::PathLossModel, world::{World, NUM_DEVICES}}, traffic_models::{TrafficDistribution, TrafficModel}};
 use lazy_static::lazy_static;
 use lorawan::{device::{Device, DeviceClass, LoRaWANVersion}, encryption::key::Key, physical_parameters::{CodeRate, DataRate, LoRaBandwidth, SpreadingFactor}, regional_parameters::region::{Region, RegionalParameters}, utils::eui::EUI64};
 use lorawan_device::{communicator::Position, configs::RadioDeviceConfig};
@@ -124,7 +124,7 @@ async fn main() {
             
             let (sf, bw, freq) = RADIO_PARAMETERS[i % RADIO_PARAMETERS.len()];
     
-            w.add_node(d, make_device_config(position, sf, freq, bw));
+            w.add_node(d, make_device_config(position, sf, freq, bw), TrafficModel::Custom(TrafficDistribution::new("./loed_traffic_distribution.csv", String::from("loed"))));
         });
     }
     
