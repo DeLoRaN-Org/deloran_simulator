@@ -1,28 +1,43 @@
-use std::{collections::HashSet, sync::Arc, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::HashSet,
+    sync::{atomic::{AtomicBool, Ordering}, Arc},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use lazy_static::lazy_static;
 use lorawan::{device::Device, physical_parameters::LoRaBandwidth};
-use lorawan_device::{communicator::{ArrivalStats, Position, ReceivedTransmission, Transmission}, devices::lorawan_device::LoRaWANDevice};
-use tokio::sync::{mpsc::{self, Sender}, Mutex, Notify};
+use lorawan_device::{
+    communicator::{ArrivalStats, Position, ReceivedTransmission, Transmission},
+    devices::lorawan_device::LoRaWANDevice,
+};
+use tokio::sync::{
+    mpsc::{self, Sender},
+    Mutex, Notify,
+};
 
 use crate::logger::Logger;
 
-use super::{network_controller_bridge::{NetworkControllerBridge, NetworkControllerBridgeConfig}, node::{Node, NodeCommunicator, NodeConfig}, path_loss::PathLossModel};
+use super::{
+    network_controller_bridge::{NetworkControllerBridge, NetworkControllerBridgeConfig},
+    node::{Node, NodeCommunicator, NodeConfig},
+    path_loss::PathLossModel,
+};
 
-pub const NUM_DEVICES: usize = 500;
+pub const NUM_DEVICES: usize = 35000;
 pub const DEVICES_TO_SKIP: usize = 0;
 pub const NUM_PACKETS: usize = 100;
-pub const FIXED_JOIN_DELAY: u64 = 30;
-pub const RANDOM_JOIN_DELAY:   u64 = 420;
-pub const FIXED_PACKET_DELAY: u64 = 30;
-pub const RANDOM_PACKET_DELAY: u64 = 420;
+pub const FIXED_JOIN_DELAY: u64 = 600;
+pub const RANDOM_JOIN_DELAY: u64 = 7200;
+pub const FIXED_PACKET_DELAY: u64 = 600;
+pub const RANDOM_PACKET_DELAY: u64 = 7200;
 pub const _CONFIRMED_AVERAGE_SEND: u8 = 10;
-pub const STARTING_DEV_NONCE: u32 = 65;
+pub const STARTING_DEV_NONCE: u32 = 345;
+pub const STARTING_FCNT_UP: u32 = 30;
 
 lazy_static! {
     pub static ref LOGGER: Logger = Logger::new("rtt_times.csv");
+    pub static ref LOGGER_DEVICES: Logger = Logger::new("devices_complete.csv");
 }
-
 
 pub enum EntityConfig {
     Node(NodeConfig),
@@ -41,7 +56,7 @@ impl EntityConfig {
             EntityConfig::NetworkController(nc) => nc.node_config.position,
         }
     }
-    
+
     pub async fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
         match self {
             EntityConfig::Node(node) => node.can_receive_transmission(t).await,
@@ -52,12 +67,13 @@ impl EntityConfig {
 
 pub struct World {
     path_loss_model: PathLossModel,
-    
+
     entity_configs: Vec<(EntityConfig, Sender<ReceivedTransmission>)>,
     entities: Vec<Entity>,
-    
+    join_handlers: Vec<tokio::task::JoinHandle<()>>,
+
     transmissions_on_air: Arc<Mutex<Vec<Transmission>>>,
- 
+
     sender: Sender<Transmission>,
 
     incoming_message: Arc<Notify>,
@@ -65,6 +81,9 @@ pub struct World {
 
     nc_counter: u32,
     node_counter: u32,
+
+    collision_counter: u32,
+    successful_upload_counter: u32,
 }
 
 impl World {
@@ -74,8 +93,7 @@ impl World {
         let toac = transmissions_on_air.clone();
         let start_notifier = Arc::new(Notify::new());
         let incoming_message = Arc::new(Notify::new());
-        
-        
+
         let imc = incoming_message.clone();
         let snc = start_notifier.clone();
 
@@ -100,6 +118,7 @@ impl World {
         World {
             entity_configs: Vec::new(),
             entities: Vec::new(),
+            join_handlers: Vec::new(),
             path_loss_model,
             transmissions_on_air,
             sender,
@@ -107,24 +126,29 @@ impl World {
             start_notifier,
             nc_counter: 0,
             node_counter: 0,
+            collision_counter: 0,
+            successful_upload_counter: 0,
         }
     }
 
     pub fn node_counter(&self) -> u32 {
         self.node_counter
     }
-    
+
     pub fn nc_counter(&self) -> u32 {
         self.nc_counter
     }
 
     pub fn now() -> u128 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
     }
 
-    pub async fn device_routine(mut node: Node) {
+    pub async fn device_routine(mut node: Node, running: Arc<AtomicBool>) {
         node.set_dev_nonce(STARTING_DEV_NONCE);
-        node.run().await;
+        node.run(running).await;
     }
 
     pub fn add_node(&mut self, device: Device, config: NodeConfig) {
@@ -132,24 +156,34 @@ impl World {
 
         let c2 = config.clone();
 
-        let node = Node::new(self.node_counter,  LoRaWANDevice::new(device, NodeCommunicator::new(self.sender.clone(), receiver, config)));
+        let node = Node::new(
+            self.node_counter,
+            LoRaWANDevice::new(
+                device,
+                NodeCommunicator::new(self.sender.clone(), receiver, config),
+            ),
+        );
         self.entities.push(Entity::Node(node));
         self.node_counter += 1;
-        
+
         let node_config = EntityConfig::Node(c2);
         self.entity_configs.push((node_config, sender));
     }
 
-
-    pub async fn networ_controller_routine(nc: NetworkControllerBridge) {        
-        nc.start().await;
+    pub async fn networ_controller_routine(nc: NetworkControllerBridge, running: Arc<AtomicBool>) {
+        nc.start(running).await;
     }
 
     pub fn add_network_controller(&mut self, nc_config: NetworkControllerBridgeConfig) {
         let (sender, receiver) = tokio::sync::mpsc::channel::<ReceivedTransmission>(10000);
-        let nc = NetworkControllerBridge::new(self.nc_counter, self.sender.clone(), receiver, nc_config.clone());
+        let nc = NetworkControllerBridge::new(
+            self.nc_counter,
+            self.sender.clone(),
+            receiver,
+            nc_config.clone(),
+        );
         self.entities.push(Entity::NetworkController(nc));
-        
+
         let nc = EntityConfig::NetworkController(nc_config);
         self.nc_counter += 1;
         self.entity_configs.push((nc, sender));
@@ -171,7 +205,8 @@ impl World {
     fn timing_collision(t1: &Transmission, t2: &Transmission) -> bool {
         let t1_toa = t1.time_on_air();
         let t2_toa = t2.time_on_air();
-        t1.start_time > t2.start_time && t1.start_time < (t2.start_time + t2_toa) || t2.start_time > t1.start_time && t2.start_time < (t1.start_time + t1_toa)
+        t1.start_time > t2.start_time && t1.start_time < (t2.start_time + t2_toa)
+            || t2.start_time > t1.start_time && t2.start_time < (t1.start_time + t1_toa)
     }
 
     fn channel_collision(t1: &Transmission, t2: &Transmission) -> bool {
@@ -187,15 +222,24 @@ impl World {
     fn sf_collision(t1: &Transmission, t2: &Transmission) -> bool {
         t1.spreading_factor == t2.spreading_factor
     }
-    
+
     fn direction_collision(t1: &Transmission, t2: &Transmission) -> bool {
         t1.uplink == t2.uplink //it should be iq check (uplink and downlink have inverted iq so they dont collide and gateways dont receive each other)
     }
 
-    fn power_collision<'t>(t1: &'t Transmission, t2: &'t Transmission, device_position: Position, path_loss_model: &PathLossModel) -> Option<&'t Transmission> {
-        let power_threshold = 6.0;  //dB, it is hardcoded both in lorasim and flora
-        let t1_rssi = t1.starting_power - path_loss_model.get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
-        let t2_rssi = t2.starting_power - path_loss_model.get_path_loss(device_position.distance(&t2.start_position), t2.frequency);
+    fn power_collision<'t>(
+        t1: &'t Transmission,
+        t2: &'t Transmission,
+        device_position: Position,
+        path_loss_model: &PathLossModel,
+    ) -> Option<&'t Transmission> {
+        let power_threshold = 6.0; //dB, it is hardcoded both in lorasim and flora
+        let t1_rssi = t1.starting_power
+            - path_loss_model
+                .get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
+        let t2_rssi = t2.starting_power
+            - path_loss_model
+                .get_path_loss(device_position.distance(&t2.start_position), t2.frequency);
         if (t1_rssi - t2_rssi).abs() < power_threshold {
             None
         } else if t1_rssi - t2_rssi < power_threshold {
@@ -206,20 +250,29 @@ impl World {
     }
 
     fn full_collision_check(t1: &Transmission, t2: &Transmission) -> bool {
-        World::timing_collision(t1, t2) && World::direction_collision(t1, t2) && World::channel_collision(t1, t2) && World::sf_collision(t1, t2)
+        World::timing_collision(t1, t2)
+            && World::direction_collision(t1, t2)
+            && World::channel_collision(t1, t2)
+            && World::sf_collision(t1, t2)
     }
 
     async fn check_collisions_and_upload(&mut self) {
         let ended_transmissions = {
             let mut transmissions = self.transmissions_on_air.lock().await;
-            let (ended_transmissions, not_endend_transmission): (Vec<Transmission>, Vec<Transmission>) = transmissions.iter().cloned().partition(|t| t.ended());  
+            let (ended_transmissions, not_endend_transmission): (
+                Vec<Transmission>,
+                Vec<Transmission>,
+            ) = transmissions.iter().cloned().partition(|t| t.ended());
             *transmissions = not_endend_transmission;
             ended_transmissions
         };
 
         let mut potentially_collided_transmissions = Vec::new();
 
-        println!("Checking for collisions, number of ended transmissions: {}", ended_transmissions.len());
+        println!(
+            "Checking for collisions, number of ended transmissions: {}",
+            ended_transmissions.len()
+        );
 
         for (i, t1) in ended_transmissions.iter().enumerate() {
             let mut collided = false;
@@ -237,14 +290,18 @@ impl World {
                     if device_position == t1.start_position {
                         continue;
                     }
-                    let t1_rssi = t1.starting_power - self.path_loss_model.get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
+                    let t1_rssi = t1.starting_power
+                        - self.path_loss_model.get_path_loss(
+                            device_position.distance(&t1.start_position),
+                            t1.frequency,
+                        );
                     let t1_rx: ReceivedTransmission = ReceivedTransmission {
                         transmission: t1.clone(),
                         arrival_stats: ArrivalStats {
                             time: World::now(),
                             rssi: t1_rssi,
                             snr: 0.0,
-                        }
+                        },
                     };
                     if entity.can_receive_transmission(&t1_rx).await {
                         sender.send(t1_rx).await.unwrap();
@@ -253,28 +310,36 @@ impl World {
             }
         }
 
+
+        println!("Number of collisions: {}", potentially_collided_transmissions.len());
+        self.collision_counter += potentially_collided_transmissions.len() as u32;
+
         for (entity, sender) in self.entity_configs.iter() {
             let mut survived_transmissions = HashSet::new();
             for (t1, t2) in potentially_collided_transmissions.iter() {
-                let device_position = entity.get_position().await;           
+                let device_position = entity.get_position().await;
                 let t = World::power_collision(t1, t2, device_position, &self.path_loss_model);
                 if let Some(t) = t {
-                    let (survived, eaten) = if t == t1 { ("t1", "t2") } else { ("t2", "t1") };
-                    println!("[World] Transmission {eaten} eaten by {survived}");
-                    let t_rssi = t.starting_power - self.path_loss_model.get_path_loss(device_position.distance(&t.start_position), t.frequency);
+                    //let (survived, eaten) = if t == t1 { ("t1", "t2") } else { ("t2", "t1") };
+                    //println!("[World] Transmission {eaten} eaten by {survived}");
+                    let t_rssi = t.starting_power
+                        - self.path_loss_model.get_path_loss(
+                            device_position.distance(&t.start_position),
+                            t.frequency,
+                        );
                     let t_rx: ReceivedTransmission = ReceivedTransmission {
                         transmission: t.clone(),
                         arrival_stats: ArrivalStats {
                             time: World::now(),
                             rssi: t_rssi,
                             snr: 0.0,
-                        }
+                        },
                     };
                     if entity.can_receive_transmission(&t_rx).await {
                         survived_transmissions.insert(t_rx);
                     }
                 } else {
-                    println!("[World] Transmissions collided")
+                    //println!("[World] Transmissions collided")
                 }
             }
 
@@ -284,28 +349,44 @@ impl World {
         }
     }
 
-
     pub async fn run(&mut self, duration: Option<Duration>) {
         self.start_notifier.notify_waiters();
 
+
         let entities = std::mem::take(&mut self.entities);
+        
+        let running: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
 
         for entity in entities.into_iter() {
-            match entity {
+            self.join_handlers.push(match entity {
                 Entity::Node(node) => {
-                    tokio::spawn(World::device_routine(node));
-                },
+                    tokio::spawn(World::device_routine(node, running.clone()))
+                }
                 Entity::NetworkController(nc) => {
-                    tokio::spawn(World::networ_controller_routine(nc));
-                },
-            }
+                    tokio::spawn(World::networ_controller_routine(nc, running.clone()))
+                }
+            })
         }
         //Entity::NetworkController(nc) => tokio::spawn(World::networ_controller_routine(Arc::clone(nc))),
         //Entity::Node(node) => tokio::spawn(World::device_routine(Arc::clone(node))),
 
         let now = Instant::now();
 
-        loop {
+        let ignore = Arc::new(AtomicBool::new(false));
+
+        let r1 = running.clone();
+        let i1= ignore.clone();
+
+        ctrlc::set_handler(move || {
+            println!("Terminating simulation...");
+            if !r1.load(Ordering::Relaxed) {
+                i1.store(true, Ordering::Relaxed);
+                println!("Forcefully terminating simulation")
+            }
+            r1.store(false, Ordering::Relaxed)
+        }).expect("Error setting Ctrl-C handler");
+
+        while running.load(Ordering::Relaxed) {
             self.incoming_message.notified().await;
             //println!("[World] Checking for collisions");
             self.check_collisions_and_upload().await;
@@ -313,11 +394,22 @@ impl World {
 
             if let Some(duration) = duration {
                 if now.elapsed() > duration {
+                    running.store(false, Ordering::Relaxed);
                     break;
                 }
             }
         }
+        
+        for join_handler in std::mem::take(&mut self.join_handlers) {
+            join_handler.await.unwrap();
+            if ignore.load(Ordering::Relaxed) {
+                break;
+            }
+        }
 
+        println!("END STATS: ");
+        println!("Number of collisions: {}", self.collision_counter);
+        println!("Number of successful uploads: {}", self.successful_upload_counter);
         println!("Simulation ended");
     }
 }
@@ -325,22 +417,33 @@ impl World {
 #[test]
 fn testfn() {
     let t1 = Transmission {
-        start_position: Position { x: 100000.0, y: 0.0, z: 0.0 },
+        start_position: Position {
+            x: 100000.0,
+            y: 0.0,
+            z: 0.0,
+        },
         start_time: World::now(),
         frequency: 868_100_000.0,
         bandwidth: LoRaBandwidth::BW125,
-        spreading_factor: lorawan::physical_parameters::SpreadingFactor::SF7,
+        spreading_factor: lorawan::physical_parameters::SpreadingFactor::SF12,
         code_rate: lorawan::physical_parameters::CodeRate::CR4_5,
         starting_power: 14.0,
         uplink: true,
         payload: vec![0; 32],
     };
 
+    println!("Time on air: {}", t1.time_on_air());
+
     let path_loss = PathLossModel::FreeSpace;
 
-    let origin = Position { x: 0.0, y: 0.0, z: 0.0 };
+    let origin = Position {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
 
-    let rssi =  t1.starting_power - path_loss.get_path_loss(t1.start_position.distance(&origin), t1.frequency);
+    let rssi = t1.starting_power
+        - path_loss.get_path_loss(t1.start_position.distance(&origin), t1.frequency);
 
     println!("RSSI: {}", rssi);
 }

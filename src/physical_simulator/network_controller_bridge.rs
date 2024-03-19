@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 
 use lorawan_device::communicator::{CommunicatorError, Position, ReceivedTransmission, Transmission};
 use tokio::{net::UdpSocket, sync::mpsc::{Receiver, Sender}};
@@ -58,15 +58,17 @@ impl NetworkControllerBridge {
         t.arrival_stats.rssi > get_sensitivity(&t.transmission)        //signal strength is greater than receiver sensitivity
     }
 
-    pub async fn start(mut self) {
+    pub async fn start(mut self, running: Arc<AtomicBool>) {
         let udp_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
         udp_socket.connect(self.network_controller_addr).await.unwrap();
 
         let udp_socket = Arc::new(udp_socket);
         let udp_socket_clone = udp_socket.clone();
 
+        let r1 = running.clone();
+
         let t1 = tokio::spawn(async move {
-            loop {
+            while r1.load(Ordering::Relaxed) {
                 let received_transmission = self.receiver.recv().await.ok_or(CommunicatorError::Radio("Receiver channel closed unexpectedly".to_string())).unwrap();
 
                 //println!("[NC{}] Received uplink transmission with rssi {}", self.id, received_transmission.arrival_stats.rssi);
@@ -81,7 +83,7 @@ impl NetworkControllerBridge {
 
         let t2 = tokio::spawn(async move {
             let mut buffer = [0u8; 1024];
-            loop {
+            while running.load(Ordering::Relaxed) {
                 let size = udp_socket_clone.recv(&mut buffer).await.unwrap();
     
                 
@@ -98,5 +100,6 @@ impl NetworkControllerBridge {
         });
 
         let (_r1,_r2) = tokio::join!(t1, t2);
+        println!("NetworkControllerBridge {} stopped", self.id);
     }
 }

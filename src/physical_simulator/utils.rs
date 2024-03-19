@@ -10,7 +10,7 @@ use lorawan_device::communicator::Transmission;
 //function returns sensitivity -- according to LoRa documentation, it changes with LoRa parameters
 //Sensitivity values from Semtech SX1272/73 datasheet, table 10, Rev 3.1, March 2017
 pub fn get_sensitivity(transmission: &Transmission) -> f32 {
-    /*let sensitivity;
+    let sensitivity;
     let sf = transmission.spreading_factor;
     let bw = transmission.bandwidth;
 
@@ -46,6 +46,5 @@ pub fn get_sensitivity(transmission: &Transmission) -> f32 {
             LoRaBandwidth::BW500 => sensitivity = -129.0,
         },
     }
-    //sensitivity*/
-    -120.0
+    sensitivity //-120.0
 }

@@ -1,13 +1,12 @@
 
-use std::{fs::OpenOptions, ops::{Deref, DerefMut}, sync::Arc, time::Duration};
+use std::{ops::{Deref, DerefMut}, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use lorawan::utils::{eui::EUI64, PrettyHexSlice};
 use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::{debug_device::{DebugCommunicator, DebugDevice}, lorawan_device::LoRaWANDevice}};
 use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}, time::Instant};
 
-use crate::physical_simulator::world::{FIXED_JOIN_DELAY, FIXED_PACKET_DELAY, LOGGER, NUM_PACKETS, RANDOM_JOIN_DELAY, RANDOM_PACKET_DELAY};
+use crate::{physical_simulator::world::{FIXED_JOIN_DELAY, LOGGER, NUM_PACKETS, RANDOM_JOIN_DELAY}, traffic_distribution::LoEDDistribution};
 
 use super::{utils::get_sensitivity, world::World};
-use std::io::Write;
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -87,34 +86,69 @@ impl Node {
     //    t.arrival_stats.rssi > get_sensitivity(&t.transmission)                                        //signal strength is greater than receiver sensitivity
     //}
 
-    pub async fn run(&mut self) {
-        let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY;
-        if let Err(e) = self.join(Some(10), Some(Duration::from_secs(FIXED_JOIN_DELAY + sleep_time))).await {
-            panic!("Error joining: {e:?}");
-        };
-
-        println!("Initialized: {}", PrettyHexSlice(&**self.dev_eui()));
-        tokio::time::sleep(Duration::from_secs(FIXED_JOIN_DELAY + RANDOM_JOIN_DELAY - sleep_time)).await;            
+    pub async fn run(&mut self, running: Arc<AtomicBool>) {
+        //let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + FIXED_JOIN_DELAY;
+        //let distribution = SPVDistribution::default();
         
+        for i in 0..50 {
+            //let sleep_time = distribution.sample(&mut rand::thread_rng()) + rand::random::<f64>() * 30.0 + rand::random::<f64>() * 30.0;
+            let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + if i == 0 { 0 } else { FIXED_JOIN_DELAY };
+            println!("Sleeping for {sleep_time:?}");
+            tokio::time::sleep(Duration::from_secs_f64(sleep_time as f64)).await;
+            let before = Instant::now();                
+            if let Err(e) = self.send_join_request().await {
+                    println!("Join failed: {e:?}, retrying...");
+            }
+            let rtt = before.elapsed().as_millis();
+            LOGGER.write(&format!("{},{}", self.dev_eui(), rtt));
+
+            if self.device.is_initialized() {
+                println!("Device {} initialized", PrettyHexSlice(&**self.dev_eui()));
+            } else {
+                println!("!!!!! Device {} NOT initialized !!!!!", PrettyHexSlice(&**self.dev_eui()));
+            }
+        }
+        if !self.is_initialized() {
+            panic!("Device not initialized");
+        }
+        
+        let mut errors = 0;
+        let mut successes = 0;
+
+        println!("Initialized: {}", PrettyHexSlice(self.session().unwrap().network_context().dev_addr()));
+
+        //let device_json = serde_json::to_string(&*self.device).unwrap();
+        //LOGGER_DEVICES.write(&device_json);
+        
+        //tokio::time::sleep(Duration::from_secs(FIXED_JOIN_DELAY + RANDOM_JOIN_DELAY - sleep_time)).await;            
+
         for i in 0..NUM_PACKETS {
-            let sleep_time = rand::random::<u64>() % RANDOM_PACKET_DELAY;
-            tokio::time::sleep(Duration::from_secs(FIXED_PACKET_DELAY + sleep_time)).await;
-            
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+            //let sleep_time = distribution.sample(&mut rand::thread_rng()) + rand::random::<f64>() * 30.0;
+            let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + FIXED_JOIN_DELAY;
+            tokio::time::sleep(Duration::from_secs_f64(sleep_time as f64)).await;
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+
             let before = Instant::now();                
             match self.send_uplink(Some(format!("###  confirmed {i} message  ###").as_bytes()), true, Some(1), None).await {
                 Ok(_) => {
                     println!("Device {} sent and received {i}-th message", PrettyHexSlice(&**self.dev_eui()));
                     let rtt = before.elapsed().as_millis();
-                    if true {
-                        LOGGER.write(&format!("{},{}", self.dev_eui(), rtt))
-                    }
+                    successes += 1;
+                    LOGGER.write(&format!("{},{}", self.dev_eui(), rtt))
                 },
                 Err(e) => {
+                    errors += 1;
                     println!("Error sending confirmed message: {e:?}");
                 },
-            }
-
+            }   
         }
+
+        println!("Device {} finished with {} successes and {} errors", PrettyHexSlice(&**self.dev_eui()), successes, errors);
     }
 }
 
@@ -173,18 +207,20 @@ impl NodeCommunicator {
     //    energy_consumption * seconds
     //}
 
-    //pub fn change_state(&mut self, new_state: NodeState) {
-    //    let now = Instant::now();
-    //    let duration = now.duration_since(self.last_status_change);
-    //    match self.state {
-    //        NodeState::Idle => self.idle_time += duration,
-    //        NodeState::Sleep => self.sleep_time += duration,
-    //        NodeState::Transmitting => self.tx_time += duration,
-    //        NodeState::Receiving => self.rx_time += duration,
-    //    }
-    //    self.state = new_state;
-    //    self.last_status_change = Instant::now();
-    //}
+    pub async fn change_state(&mut self, new_state: NodeState) {
+        let now = Instant::now();
+        let duration = now.duration_since(self.last_status_change);
+        
+        let mut current_state = self.config.node_state.lock().await;
+        match *current_state {
+            NodeState::Idle => self.idle_time += duration,
+            NodeState::Sleep => self.sleep_time += duration,
+            NodeState::Transmitting => self.tx_time += duration,
+            NodeState::Receiving => self.rx_time += duration,
+        }
+        *current_state = new_state;
+        self.last_status_change = Instant::now();
+    }
 
     pub fn get_config(&self) -> &NodeConfig {
         &self.config
