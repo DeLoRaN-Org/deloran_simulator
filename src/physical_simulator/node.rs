@@ -5,7 +5,7 @@ use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Posi
 use rand::distributions::Distribution;
 use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}, time::Instant};
 
-use crate::{physical_simulator::world::{FIXED_JOIN_DELAY, LOGGER, NUM_PACKETS, RANDOM_JOIN_DELAY}, traffic_models::TrafficModel};
+use crate::{constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY}, physical_simulator::world::LOGGER, traffic_models::TrafficModel};
 
 use super::{utils::get_sensitivity, world::World};
 
@@ -85,7 +85,7 @@ impl Node {
 
     pub async fn run(&mut self, running: Arc<AtomicBool>) {
 
-        for i in 0..50 {
+        for _ in 0..50 {
             let sleep_time = self.traffic_model.sample(&mut rand::thread_rng());
             println!("Sleeping for {sleep_time:?}");
             tokio::time::sleep(Duration::from_secs_f64(sleep_time as f64)).await;
@@ -94,7 +94,7 @@ impl Node {
                     println!("Join failed: {e:?}, retrying...");
             }
             let rtt = before.elapsed().as_millis();
-            LOGGER.write(&format!("{},{}", self.dev_eui(), rtt));
+            LOGGER.write(&format!("{},{},{}", World::now(), self.dev_eui(), rtt));
 
             if self.device.is_initialized() {
                 println!("Device {} initialized", PrettyHexSlice(&**self.dev_eui()));
@@ -128,7 +128,7 @@ impl Node {
                     println!("Device {} sent and received {i}-th message", PrettyHexSlice(&**self.dev_eui()));
                     let rtt = before.elapsed().as_millis();
                     successes += 1;
-                    LOGGER.write(&format!("{},{}", self.dev_eui(), rtt))
+                    LOGGER.write(&format!("{},{},{}",World::now(), self.dev_eui(), rtt))
                 },
                 Err(e) => {
                     errors += 1;

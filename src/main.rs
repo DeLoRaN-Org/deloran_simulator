@@ -1,12 +1,13 @@
 use std::{fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, sync::Arc, time::Duration};
 
-use deloran_simulator::{physical_simulator::{network_controller_bridge::NetworkControllerBridgeConfig, node::{NodeConfig, NodeState}, path_loss::PathLossModel, world::{World, NUM_DEVICES}}, traffic_models::{TrafficDistribution, TrafficModel}};
+use deloran_simulator::{physical_simulator::{network_controller_bridge::NetworkControllerBridgeConfig, node::{NodeConfig, NodeState}, path_loss::PathLossModel, world::World}, traffic_models::{TrafficDistribution, TrafficModel}};
 use lazy_static::lazy_static;
 use lorawan::{device::{Device, DeviceClass, LoRaWANVersion}, encryption::key::Key, physical_parameters::{CodeRate, DataRate, LoRaBandwidth, SpreadingFactor}, regional_parameters::region::{Region, RegionalParameters}, utils::eui::EUI64};
 use lorawan_device::{communicator::Position, configs::RadioDeviceConfig};
 
-use deloran_simulator::physical_simulator::world::{NUM_PACKETS, RANDOM_JOIN_DELAY, FIXED_JOIN_DELAY, FIXED_PACKET_DELAY, RANDOM_PACKET_DELAY, _CONFIRMED_AVERAGE_SEND, STARTING_DEV_NONCE};
 use tokio::sync::Mutex;
+
+use deloran_simulator::constants::*;
 
 lazy_static! {
     pub static ref RADIO_PARAMETERS: Vec<(SpreadingFactor, LoRaBandwidth, f32)> = {
@@ -86,13 +87,13 @@ fn random_position_between(x1: f32, x2: f32, y1: f32, y2: f32, z1: f32, z2: f32)
 #[tokio::main]
 async fn main() {
 
-    let path_loss = PathLossModel::FreeSpace;
+    let path_loss = PathLossModel::LogDistanceNormalShadowing;
     let mut w = World::new(path_loss);
 
-    let nc1 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 1000000.0,      y:-1000000.0,      z: 100000.0 });
-    let nc2 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20 ), 9090)), Position { x: 1000000.0,      y: 1000000.0,      z: 100000.0 });
-    let nc3 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81 ), 9090)), Position { x:-1000000.0,      y:-1000000.0,      z: 100000.0 });
-    let nc4 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x:-1000000.0,      y: 1000000.0,      z: 100000.0 });
+    let nc1 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 10000.0,      y:-10000.0,      z: 100.0 });
+    let nc2 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20 ), 9090)), Position { x: 10000.0,      y: 10000.0,      z: 100.0 });
+    let nc3 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81 ), 9090)), Position { x:-10000.0,      y:-10000.0,      z: 100.0 });
+    let nc4 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x:-10000.0,      y: 10000.0,      z: 100.0 });
     
     //let mut base_frequency = 868_000_000.0;
     //let channels = [
@@ -106,27 +107,25 @@ async fn main() {
     //    867_900_000.0,
     //];
 
-    {
-        let ncs = [&nc1, &nc2, &nc3, &nc4];
-    
-        let file_content = fs::read_to_string("./devices_augmented.csv").unwrap();
-        file_content.split('\n').take(NUM_DEVICES).enumerate().for_each(|(i, line)| {
-            let splitted = line.split(',').collect::<Vec<&str>>();
-            let dev_eui = EUI64::from_hex(splitted[0]).unwrap();
-            let join_eui = EUI64::from_hex(splitted[1]).unwrap();
-            let key = Key::from_hex(splitted[2]).unwrap();
-            
-            let d = Device::new(DeviceClass::A, Some(RegionalParameters::new(Region::EU863_870)), dev_eui, join_eui, key, key, LoRaWANVersion::V1_0_4);
-            
-            let assigned_nc = &ncs[i % ncs.len()];
-    
-            let position = random_position_between(assigned_nc.node_config.position.x, assigned_nc.node_config.position.x + 10000.0, assigned_nc.node_config.position.y, assigned_nc.node_config.position.y + 10000.0, 0.0, 100.0);
-            
-            let (sf, bw, freq) = RADIO_PARAMETERS[i % RADIO_PARAMETERS.len()];
-    
-            w.add_node(d, make_device_config(position, sf, freq, bw), TrafficModel::Custom(TrafficDistribution::new("./loed_traffic_distribution.csv", String::from("loed"))));
-        });
-    }
+    let ncs = [&nc1, &nc2, &nc3, &nc4];
+
+    let file_content = fs::read_to_string("./devices_augmented.csv").unwrap();
+    file_content.split('\n').take(NUM_DEVICES).enumerate().for_each(|(i, line)| {
+        let splitted = line.split(',').collect::<Vec<&str>>();
+        let dev_eui = EUI64::from_hex(splitted[0]).unwrap();
+        let join_eui = EUI64::from_hex(splitted[1]).unwrap();
+        let key = Key::from_hex(splitted[2]).unwrap();
+        
+        let d = Device::new(DeviceClass::A, Some(RegionalParameters::new(Region::EU863_870)), dev_eui, join_eui, key, key, LoRaWANVersion::V1_0_4);
+        
+        let assigned_nc = &ncs[i % ncs.len()];
+
+        let position = random_position_between(assigned_nc.node_config.position.x, assigned_nc.node_config.position.x + 1000.0, assigned_nc.node_config.position.y, assigned_nc.node_config.position.y + 1000.0, 0.0, 10.0);
+        
+        let (sf, bw, freq) = RADIO_PARAMETERS[i % RADIO_PARAMETERS.len()];
+
+        w.add_node(d, make_device_config(position, sf, freq, bw), TrafficModel::Custom(TrafficDistribution::new("./loed_traffic_distribution.csv", String::from("loed"))));
+    });
     
     //{
     //    let ncs = [&nc1, &nc2, &nc3, &nc4];

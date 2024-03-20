@@ -1,12 +1,15 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs::File, sync::Mutex};
 use std::io::Write;
+
 pub struct Logger {
     log_file: Mutex<File>,
+    active_logger: bool,
+    logger_println: bool,
 }
 
 impl Logger {
-    pub fn new(path: &str) -> Self {
+    pub fn new(path: &str, active_logger: bool, logger_println: bool) -> Self {
         let file = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -14,6 +17,8 @@ impl Logger {
         .expect("Failed to open file");
         Self {
             log_file: Mutex::new(file),
+            active_logger,
+            logger_println
         }
     }
 
@@ -22,6 +27,11 @@ impl Logger {
     }
 
     pub fn write(&self, content: &str) {
-        writeln!(self.log_file.lock().unwrap(), "{},{}", Self::now(), content).expect("Error while logging to file");
+        if self.active_logger {
+            writeln!(self.log_file.lock().unwrap(), "{}", content).expect("Error while logging to file");
+        }
+        if self.logger_println {
+            println!("{}", content)
+        }
     }
 }

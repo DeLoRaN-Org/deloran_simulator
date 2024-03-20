@@ -15,7 +15,7 @@ use tokio::sync::{
     Mutex, Notify,
 };
 
-use crate::{logger::Logger, traffic_models::TrafficModel};
+use crate::{constants::{ACTIVE_LOGGER, LOGGER_PRINTLN, PRINT_LOG_PATH, RTT_LOG_PATH, STARTING_DEV_NONCE}, logger::Logger, traffic_models::TrafficModel};
 
 use super::{
     network_controller_bridge::{NetworkControllerBridge, NetworkControllerBridgeConfig},
@@ -23,20 +23,10 @@ use super::{
     path_loss::PathLossModel,
 };
 
-pub const NUM_DEVICES: usize = 35000;
-pub const DEVICES_TO_SKIP: usize = 0;
-pub const NUM_PACKETS: usize = 100;
-pub const FIXED_JOIN_DELAY: u64 = 600;
-pub const RANDOM_JOIN_DELAY: u64 = 7200;
-pub const FIXED_PACKET_DELAY: u64 = 600;
-pub const RANDOM_PACKET_DELAY: u64 = 7200;
-pub const _CONFIRMED_AVERAGE_SEND: u8 = 10;
-pub const STARTING_DEV_NONCE: u32 = 345;
-pub const STARTING_FCNT_UP: u32 = 30;
-
 lazy_static! {
-    pub static ref LOGGER: Logger = Logger::new("rtt_times.csv");
-    pub static ref LOGGER_DEVICES: Logger = Logger::new("devices_complete.csv");
+    pub static ref LOGGER: Logger = Logger::new(RTT_LOG_PATH, ACTIVE_LOGGER, LOGGER_PRINTLN);
+    pub static ref PRINTER_LOGGER: Logger = Logger::new(PRINT_LOG_PATH, ACTIVE_LOGGER, LOGGER_PRINTLN);
+    //pub static ref LOGGER_DEVICES: Logger = Logger::new("devices_complete.csv");
 }
 
 pub enum EntityConfig {
@@ -439,6 +429,5 @@ fn simulated_transmission() {
     };
 
     let rssi = t1.starting_power - path_loss.get_path_loss(t1.start_position.distance(&origin), t1.frequency);
-
     println!("RSSI: {}", rssi);
 }
