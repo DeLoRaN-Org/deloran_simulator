@@ -2,10 +2,10 @@
 use std::{ops::{Deref, DerefMut}, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use lorawan::utils::{eui::EUI64, PrettyHexSlice};
 use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::{debug_device::{DebugCommunicator, DebugDevice}, lorawan_device::LoRaWANDevice}};
-use rand::distributions::Distribution;
+use rand::{distributions::Distribution, Rng, SeedableRng};
 use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}, time::Instant};
 
-use crate::{constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY}, physical_simulator::world::LOGGER, traffic_models::TrafficModel};
+use crate::{constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY}, physical_simulator::world::{LOGGER, REGULAR_TRAFFIC_DISTRIBUTION, UNREGULAR_TRAFFIC_DISTRIBUTION}};
 
 use super::{utils::get_sensitivity, world::World};
 
@@ -59,15 +59,15 @@ pub enum NodeState {
 pub struct Node {
     pub node_id: u32,
     pub device: LoRaWANDevice<DebugCommunicator<NodeCommunicator>>,
-    pub traffic_model: TrafficModel,
+    pub regular_traffic_model: bool,
 }
 
 impl Node {
-    pub fn new(node_id: u32, device: LoRaWANDevice<NodeCommunicator>, traffic_model: TrafficModel) -> Node {
+    pub fn new(node_id: u32, device: LoRaWANDevice<NodeCommunicator>, regular_traffic_model: bool) -> Node {
         Node {
             node_id,
             device: DebugDevice::from(device),
-            traffic_model
+            regular_traffic_model
         }
     }
 
@@ -85,10 +85,28 @@ impl Node {
 
     pub async fn run(&mut self, running: Arc<AtomicBool>) {
 
+        let mut rng = rand::rngs::StdRng::from_entropy();
+
+        let mut periodic_delay = REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
+        while periodic_delay < 200.0 {
+            periodic_delay = REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
+        }
+
+
         for _ in 0..50 {
-            let sleep_time = self.traffic_model.sample(&mut rand::thread_rng());
+            let sleep_time = if self.regular_traffic_model {
+                periodic_delay
+            } else {
+                let mut v = 0.0;
+                while v < 180.0 {
+                    v = UNREGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng);
+                }
+                v
+            };
+
             println!("Sleeping for {sleep_time:?}");
-            tokio::time::sleep(Duration::from_secs_f64(sleep_time as f64)).await;
+            tokio::time::sleep(Duration::from_secs_f64(sleep_time)).await;
+
             let before = Instant::now();                
             if let Err(e) = self.send_join_request().await {
                     println!("Join failed: {e:?}, retrying...");
@@ -115,7 +133,7 @@ impl Node {
             if !running.load(Ordering::Relaxed) {
                 break;
             }
-            //let sleep_time = distribution.sample(&mut rand::thread_rng()) + rand::random::<f64>() * 30.0;
+            //let sleep_time = distribution.sample(&mut rng) + rand::random::<f64>() * 30.0;
             let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + FIXED_JOIN_DELAY;
             tokio::time::sleep(Duration::from_secs_f64(sleep_time as f64)).await;
             if !running.load(Ordering::Relaxed) {

@@ -1,9 +1,12 @@
 use std::{fs, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, sync::Arc, time::Duration};
 
-use deloran_simulator::{physical_simulator::{network_controller_bridge::NetworkControllerBridgeConfig, node::{NodeConfig, NodeState}, path_loss::PathLossModel, world::World}, traffic_models::{TrafficDistribution, TrafficModel}};
+use deloran_simulator::physical_simulator::{network_controller_bridge::NetworkControllerBridgeConfig, node::{NodeConfig, NodeState}, path_loss::PathLossModel, world::{World, REGULAR_TRAFFIC_DISTRIBUTION, UNREGULAR_TRAFFIC_DISTRIBUTION}};
 use lazy_static::lazy_static;
 use lorawan::{device::{Device, DeviceClass, LoRaWANVersion}, encryption::key::Key, physical_parameters::{CodeRate, DataRate, LoRaBandwidth, SpreadingFactor}, regional_parameters::region::{Region, RegionalParameters}, utils::eui::EUI64};
 use lorawan_device::{communicator::Position, configs::RadioDeviceConfig};
+
+#[allow(unused)]
+use rand::distributions::Distribution;
 
 use tokio::sync::Mutex;
 
@@ -23,6 +26,46 @@ lazy_static! {
     };
 }
 
+
+#[test]
+fn foo() {
+    let mut zero_to_100 = 0;
+    let mut hundred_to_200 = 0;
+    let mut two_hundred_to_300 = 0;
+    let mut three_hundred_to_400 = 0;
+    let mut four_hundred_to_500 = 0;
+    let mut more_than_1500 = 0;
+    let mut other = 0;
+
+    for _ in 0..10000 {
+        let v = UNREGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rand::thread_rng());
+        if v < 100.0 {
+            zero_to_100 += 1;
+        } else if v < 200.0 {
+            hundred_to_200 += 1;
+        } else if v < 300.0 {
+            two_hundred_to_300 += 1;
+        } else if v < 400.0 {
+            three_hundred_to_400 += 1;
+        } else if v < 500.0 {
+            four_hundred_to_500 += 1;
+        }
+        else if v > 1500.0 {
+            more_than_1500 += 1;
+        }
+        else {
+            other += 1;
+        }
+    }
+
+    println!("0-100: {}", zero_to_100);
+    println!("100-200: {}", hundred_to_200);
+    println!("200-300: {}", two_hundred_to_300);
+    println!("300-400: {}", three_hundred_to_400);
+    println!("400-500: {}", four_hundred_to_500);
+    println!("More than 1500: {}", more_than_1500);
+    println!("Other: {}", other)
+}
 
 
 fn make_device_config(position: Position, sf: SpreadingFactor, freq: f32, bandwidth: LoRaBandwidth) -> NodeConfig {
@@ -90,10 +133,10 @@ async fn main() {
     let path_loss = PathLossModel::LogDistanceNormalShadowing;
     let mut w = World::new(path_loss);
 
-    let nc1 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 10000.0,      y:-10000.0,      z: 100.0 });
-    let nc2 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20 ), 9090)), Position { x: 10000.0,      y: 10000.0,      z: 100.0 });
-    let nc3 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81 ), 9090)), Position { x:-10000.0,      y:-10000.0,      z: 100.0 });
-    let nc4 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x:-10000.0,      y: 10000.0,      z: 100.0 });
+    let nc1 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 1000000.0,      y:-1000000.0,      z: 100.0 });
+    let nc2 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20 ), 9090)), Position { x: 1000000.0,      y: 1000000.0,      z: 100.0 });
+    let nc3 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81 ), 9090)), Position { x:-1000000.0,      y:-1000000.0,      z: 100.0 });
+    let nc4 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x:-1000000.0,      y: 1000000.0,      z: 100.0 });
     
     //let mut base_frequency = 868_000_000.0;
     //let channels = [
@@ -124,7 +167,7 @@ async fn main() {
         
         let (sf, bw, freq) = RADIO_PARAMETERS[i % RADIO_PARAMETERS.len()];
 
-        w.add_node(d, make_device_config(position, sf, freq, bw), TrafficModel::Custom(TrafficDistribution::new("./loed_traffic_distribution.csv", String::from("loed"))));
+        w.add_node(d, make_device_config(position, sf, freq, bw), rand::random::<f32>() < 0.86);
     });
     
     //{
@@ -162,6 +205,9 @@ async fn main() {
     println!("RANDOM_PACKET_DELAY: {RANDOM_PACKET_DELAY}");
     println!("CONFIRMED_AVERAGE_SEND: {_CONFIRMED_AVERAGE_SEND}");
     println!("STARTING_DEV_NONCE: {STARTING_DEV_NONCE}");
+    
+    println!("Traffic regular mean: {}", REGULAR_TRAFFIC_DISTRIBUTION.mean());
+    println!("Traffic unregular mean: {}", UNREGULAR_TRAFFIC_DISTRIBUTION.mean());
 
 
     println!("Simulation of {duration}s starting in 5 seconds...");

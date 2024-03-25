@@ -15,7 +15,7 @@ use tokio::sync::{
     Mutex, Notify,
 };
 
-use crate::{constants::{ACTIVE_LOGGER, LOGGER_PRINTLN, PRINT_LOG_PATH, RTT_LOG_PATH, STARTING_DEV_NONCE}, logger::Logger, traffic_models::TrafficModel};
+use crate::{constants::{ACTIVE_LOGGER, LOGGER_PRINTLN, PRINT_LOG_PATH, RTT_LOG_PATH, STARTING_DEV_NONCE}, logger::Logger, traffic_models::TrafficDistribution};
 
 use super::{
     network_controller_bridge::{NetworkControllerBridge, NetworkControllerBridgeConfig},
@@ -27,6 +27,9 @@ lazy_static! {
     pub static ref LOGGER: Logger = Logger::new(RTT_LOG_PATH, ACTIVE_LOGGER, LOGGER_PRINTLN);
     pub static ref PRINTER_LOGGER: Logger = Logger::new(PRINT_LOG_PATH, ACTIVE_LOGGER, LOGGER_PRINTLN);
     //pub static ref LOGGER_DEVICES: Logger = Logger::new("devices_complete.csv");
+
+    pub static ref REGULAR_TRAFFIC_DISTRIBUTION: TrafficDistribution = TrafficDistribution::new("loed_regular_traffic_distribution.csv", String::from("regular"));
+    pub static ref UNREGULAR_TRAFFIC_DISTRIBUTION: TrafficDistribution = TrafficDistribution::new("loed_unregular_traffic_distribution.csv", String::from("unregular"));
 }
 
 pub enum EntityConfig {
@@ -141,7 +144,7 @@ impl World {
         node.run(running).await;
     }
 
-    pub fn add_node(&mut self, device: Device, config: NodeConfig, traffic_model: TrafficModel) {
+    pub fn add_node(&mut self, device: Device, config: NodeConfig, regular_traffic_model: bool) {
         let (sender, receiver) = mpsc::channel(1000);
 
         let c2 = config.clone();
@@ -152,7 +155,7 @@ impl World {
                 device,
                 NodeCommunicator::new(self.sender.clone(), receiver, config),
             ),
-            traffic_model
+            regular_traffic_model
         );
         self.entities.push(Entity::Node(node));
         self.node_counter += 1;
