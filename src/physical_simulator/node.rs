@@ -5,7 +5,7 @@ use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Posi
 use rand::{distributions::Distribution, Rng, SeedableRng};
 use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}, time::Instant};
 
-use crate::{constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY}, physical_simulator::world::{LOGGER, REGULAR_TRAFFIC_DISTRIBUTION, UNREGULAR_TRAFFIC_DISTRIBUTION}};
+use crate::{constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY}, physical_simulator::world::{LOGGER, REGULAR_TRAFFIC_DISTRIBUTION, UNREGULAR_TRAFFIC_DISTRIBUTION}, traffic_models::{TrafficDistribution, TrafficModel}};
 
 use super::{utils::get_sensitivity, world::World};
 
@@ -88,21 +88,26 @@ impl Node {
         let mut rng = rand::rngs::StdRng::from_entropy();
 
         let mut periodic_delay = REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
-        while periodic_delay < 200.0 {
+        while periodic_delay < 100.0 {
             periodic_delay = REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
         }
 
 
-        for _ in 0..50 {
-            let sleep_time = if self.regular_traffic_model {
-                periodic_delay
+        for i in 0..50 {
+            let sleep_time = if i == 0 {
+                rng.gen_range(0..RANDOM_JOIN_DELAY - FIXED_JOIN_DELAY) as f64
             } else {
-                let mut v = 0.0;
-                while v < 180.0 {
-                    v = UNREGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng);
-                }
-                v
+                rng.gen_range(FIXED_JOIN_DELAY..RANDOM_JOIN_DELAY) as f64
             };
+            //let sleep_time = if self.regular_traffic_model {
+            //    periodic_delay
+            //} else {
+            //    let mut v = 0.0;
+            //    while v < 180.0 {
+            //        v = UNREGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng);
+            //    }
+            //    v
+            //};
 
             println!("Sleeping for {sleep_time:?}");
             tokio::time::sleep(Duration::from_secs_f64(sleep_time)).await;

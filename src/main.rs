@@ -133,10 +133,10 @@ async fn main() {
     let path_loss = PathLossModel::LogDistanceNormalShadowing;
     let mut w = World::new(path_loss);
 
-    let nc1 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 1000000.0,      y:-1000000.0,      z: 100.0 });
-    let nc2 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20 ), 9090)), Position { x: 1000000.0,      y: 1000000.0,      z: 100.0 });
-    let nc3 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81 ), 9090)), Position { x:-1000000.0,      y:-1000000.0,      z: 100.0 });
-    let nc4 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x:-1000000.0,      y: 1000000.0,      z: 100.0 });
+    let nc1 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 100000.0,      y:-100000.0,      z: 100.0 });
+    let nc2 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20 ), 9090)), Position { x: 100000.0,      y: 100000.0,      z: 100.0 });
+    let nc3 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81 ), 9090)), Position { x:-100000.0,      y:-100000.0,      z: 100.0 });
+    let nc4 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x:-100000.0,      y: 100000.0,      z: 100.0 });
     
     //let mut base_frequency = 868_000_000.0;
     //let channels = [
@@ -163,11 +163,12 @@ async fn main() {
         
         let assigned_nc = &ncs[i % ncs.len()];
 
-        let position = random_position_between(assigned_nc.node_config.position.x, assigned_nc.node_config.position.x + 1000.0, assigned_nc.node_config.position.y, assigned_nc.node_config.position.y + 1000.0, 0.0, 10.0);
+        let position = random_position_between(assigned_nc.node_config.position.x, assigned_nc.node_config.position.x + 500.0, assigned_nc.node_config.position.y, assigned_nc.node_config.position.y + 500.0, 0.0, 10.0);
         
         let (sf, bw, freq) = RADIO_PARAMETERS[i % RADIO_PARAMETERS.len()];
 
-        w.add_node(d, make_device_config(position, sf, freq, bw), rand::random::<f32>() < 0.86);
+        //w.add_node(d, make_device_config(position, sf, freq, bw), rand::random::<f32>() < 0.86);
+        w.add_node(d, make_device_config(position, sf, freq, bw), true);
     });
     
     //{

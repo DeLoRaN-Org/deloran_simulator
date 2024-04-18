@@ -250,6 +250,23 @@ impl World {
             && World::sf_collision(t1, t2)
     }
 
+    async fn create_received_transmission(&self, t: &Transmission, entity: &EntityConfig) -> Option<ReceivedTransmission> {
+    let t_rssi = t.starting_power- self.path_loss_model.get_path_loss(entity.get_position().await.distance(&t.start_position),t.frequency);
+    let t_rx: ReceivedTransmission = ReceivedTransmission {
+        transmission: t.clone(),
+        arrival_stats: ArrivalStats {
+            time: World::now(),
+            rssi: t_rssi,
+            snr: 0.0,
+        },
+    };
+    if entity.can_receive_transmission(&t_rx).await {
+        Some(t_rx)
+    } else {
+        None
+    }
+}
+
     async fn check_collisions_and_upload(&mut self) {
         let ended_transmissions = {
             let mut transmissions = self.transmissions_on_air.lock().await;
@@ -281,20 +298,7 @@ impl World {
                     if device_position == t1.start_position {
                         continue;
                     }
-                    let t1_rssi = t1.starting_power
-                        - self.path_loss_model.get_path_loss(
-                            device_position.distance(&t1.start_position),
-                            t1.frequency,
-                        );
-                    let t1_rx: ReceivedTransmission = ReceivedTransmission {
-                        transmission: t1.clone(),
-                        arrival_stats: ArrivalStats {
-                            time: World::now(),
-                            rssi: t1_rssi,
-                            snr: 0.0,
-                        },
-                    };
-                    if entity.can_receive_transmission(&t1_rx).await {
+                    if let Some(t1_rx) = self.create_received_transmission(t1, entity).await {
                         sender.send(t1_rx).await.unwrap();
                     }
                 }
@@ -311,26 +315,9 @@ impl World {
                 let device_position = entity.get_position().await;
                 let t = World::power_collision(t1, t2, device_position, &self.path_loss_model);
                 if let Some(t) = t {
-                    //let (survived, eaten) = if t == t1 { ("t1", "t2") } else { ("t2", "t1") };
-                    //println!("[World] Transmission {eaten} eaten by {survived}");
-                    let t_rssi = t.starting_power
-                        - self.path_loss_model.get_path_loss(
-                            device_position.distance(&t.start_position),
-                            t.frequency,
-                        );
-                    let t_rx: ReceivedTransmission = ReceivedTransmission {
-                        transmission: t.clone(),
-                        arrival_stats: ArrivalStats {
-                            time: World::now(),
-                            rssi: t_rssi,
-                            snr: 0.0,
-                        },
-                    };
-                    if entity.can_receive_transmission(&t_rx).await {
+                    if let Some(t_rx) = self.create_received_transmission(t, entity).await {
                         survived_transmissions.insert(t_rx);
                     }
-                } else {
-                    //println!("[World] Transmissions collided")
                 }
             }
 
