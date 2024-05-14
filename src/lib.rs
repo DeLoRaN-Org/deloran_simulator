@@ -11,7 +11,7 @@ pub mod constants {
     pub const FIXED_PACKET_DELAY: u64 = 600;
     pub const RANDOM_PACKET_DELAY: u64 = 7200;
     pub const _CONFIRMED_AVERAGE_SEND: u8 = 10;
-    pub const STARTING_DEV_NONCE: u32 = 140;
+    pub const STARTING_DEV_NONCE: u32 = 150;
     pub const STARTING_FCNT_UP: u32 = 0;
 
     pub const ACTIVE_LOGGER: bool = true;

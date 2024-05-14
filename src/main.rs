@@ -208,7 +208,9 @@ async fn main() {
     println!("STARTING_DEV_NONCE: {STARTING_DEV_NONCE}");
     
     println!("Traffic regular mean: {}", REGULAR_TRAFFIC_DISTRIBUTION.mean());
+    println!("Traffic regular std deviation: {}", REGULAR_TRAFFIC_DISTRIBUTION.variance().sqrt());
     println!("Traffic unregular mean: {}", UNREGULAR_TRAFFIC_DISTRIBUTION.mean());
+    println!("Traffic unregular std deviation: {}", UNREGULAR_TRAFFIC_DISTRIBUTION.variance().sqrt());
 
 
     println!("Simulation of {duration}s starting in 5 seconds...");

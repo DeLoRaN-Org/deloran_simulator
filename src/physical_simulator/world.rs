@@ -251,21 +251,21 @@ impl World {
     }
 
     async fn create_received_transmission(&self, t: &Transmission, entity: &EntityConfig) -> Option<ReceivedTransmission> {
-    let t_rssi = t.starting_power- self.path_loss_model.get_path_loss(entity.get_position().await.distance(&t.start_position),t.frequency);
-    let t_rx: ReceivedTransmission = ReceivedTransmission {
-        transmission: t.clone(),
-        arrival_stats: ArrivalStats {
-            time: World::now(),
-            rssi: t_rssi,
-            snr: 0.0,
-        },
-    };
-    if entity.can_receive_transmission(&t_rx).await {
-        Some(t_rx)
-    } else {
-        None
+        let t_rssi = t.starting_power- self.path_loss_model.get_path_loss(entity.get_position().await.distance(&t.start_position),t.frequency);
+        let t_rx: ReceivedTransmission = ReceivedTransmission {
+            transmission: t.clone(),
+            arrival_stats: ArrivalStats {
+                time: World::now(),
+                rssi: t_rssi,
+                snr: 0.0,
+            },
+        };
+        if entity.can_receive_transmission(&t_rx).await {
+            Some(t_rx)
+        } else {
+            None
+        }
     }
-}
 
     async fn check_collisions_and_upload(&mut self) {
         let ended_transmissions = {
@@ -347,21 +347,6 @@ impl World {
         }
         
         let now = Instant::now();
-
-        let ignore = Arc::new(AtomicBool::new(false));
-
-        let r1 = running.clone();
-        let i1= ignore.clone();
-
-        ctrlc::set_handler(move || {
-            println!("Terminating simulation...");
-            if !r1.load(Ordering::Relaxed) {
-                i1.store(true, Ordering::Relaxed);
-                println!("Forcefully terminating simulation")
-            }
-            r1.store(false, Ordering::Relaxed)
-        }).expect("Error setting Ctrl-C handler");
-
         while running.load(Ordering::Relaxed) {
             self.incoming_message.notified().await;
             //println!("[World] Checking for collisions");
@@ -373,13 +358,6 @@ impl World {
                     running.store(false, Ordering::Relaxed);
                     break;
                 }
-            }
-        }
-        
-        for join_handler in std::mem::take(&mut self.join_handlers) {
-            join_handler.await.unwrap();
-            if ignore.load(Ordering::Relaxed) {
-                break;
             }
         }
 

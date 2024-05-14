@@ -5,7 +5,7 @@ use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Posi
 use rand::{distributions::Distribution, Rng, SeedableRng};
 use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}, time::Instant};
 
-use crate::{constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY}, physical_simulator::world::{LOGGER, REGULAR_TRAFFIC_DISTRIBUTION, UNREGULAR_TRAFFIC_DISTRIBUTION}, traffic_models::{TrafficDistribution, TrafficModel}};
+use crate::{constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY}, physical_simulator::world::{LOGGER, REGULAR_TRAFFIC_DISTRIBUTION}};
 
 use super::{utils::get_sensitivity, world::World};
 
@@ -72,19 +72,18 @@ impl Node {
     }
 
     pub fn get_position(&self) -> Position {
-        self.communicator().config.position
+        self.device.communicator().config.position
     }
     
     pub async fn get_state(&self) -> NodeState {
-        self.communicator().config.get_state().await
+        self.device.communicator().config.get_state().await
     }
     
     pub async fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
-        self.communicator().config.can_receive_transmission(t).await
+        self.device.communicator().config.can_receive_transmission(t).await
     }
 
     pub async fn run(&mut self, running: Arc<AtomicBool>) {
-
         let mut rng = rand::rngs::StdRng::from_entropy();
 
         let mut periodic_delay = REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
@@ -113,26 +112,26 @@ impl Node {
             tokio::time::sleep(Duration::from_secs_f64(sleep_time)).await;
 
             let before = Instant::now();                
-            if let Err(e) = self.send_join_request().await {
+            if let Err(e) = self.device.send_join_request().await {
                     println!("Join failed: {e:?}, retrying...");
             }
             let rtt = before.elapsed().as_millis();
-            LOGGER.write(&format!("{},{},{}", World::now(), self.dev_eui(), rtt));
+            LOGGER.write(&format!("{},{},{}", World::now(), self.device.dev_eui(), rtt));
 
             if self.device.is_initialized() {
-                println!("Device {} initialized", PrettyHexSlice(&**self.dev_eui()));
+                println!("Device {} initialized", PrettyHexSlice(&**self.device.dev_eui()));
             } else {
-                println!("!!!!! Device {} NOT initialized !!!!!", PrettyHexSlice(&**self.dev_eui()));
+                println!("!!!!! Device {} NOT initialized !!!!!", PrettyHexSlice(&**self.device.dev_eui()));
             }
         }
-        if !self.is_initialized() {
+        if !self.device.is_initialized() {
             panic!("Device not initialized");
         }
         
         let mut errors = 0;
         let mut successes = 0;
 
-        println!("Initialized: {}", PrettyHexSlice(self.session().unwrap().network_context().dev_addr()));
+        println!("Initialized: {}", PrettyHexSlice(self.device.session().unwrap().network_context().dev_addr()));
 
         for i in 0..NUM_PACKETS {
             if !running.load(Ordering::Relaxed) {
@@ -146,12 +145,12 @@ impl Node {
             }
 
             let before = Instant::now();                
-            match self.send_uplink(Some(format!("###  confirmed {i} message  ###").as_bytes()), true, Some(1), None).await {
+            match self.device.send_uplink(Some(format!("###  confirmed {i} message  ###").as_bytes()), true, Some(1), None).await {
                 Ok(_) => {
-                    println!("Device {} sent and received {i}-th message", PrettyHexSlice(&**self.dev_eui()));
+                    println!("Device {} sent and received {i}-th message", PrettyHexSlice(&**self.device.dev_eui()));
                     let rtt = before.elapsed().as_millis();
                     successes += 1;
-                    LOGGER.write(&format!("{},{},{}",World::now(), self.dev_eui(), rtt))
+                    LOGGER.write(&format!("{},{},{}",World::now(), self.device.dev_eui(), rtt))
                 },
                 Err(e) => {
                     errors += 1;
@@ -160,7 +159,7 @@ impl Node {
             }   
         }
 
-        println!("Device {} finished with {} successes and {} errors", PrettyHexSlice(&**self.dev_eui()), successes, errors);
+        println!("Device {} finished with {} successes and {} errors", PrettyHexSlice(&**self.device.dev_eui()), successes, errors);
     }
 }
 
@@ -240,7 +239,6 @@ impl NodeCommunicator {
 }
 
 
-#[async_trait::async_trait]
 impl LoRaWANCommunicator for NodeCommunicator {
     type Config=NodeConfig;
 
