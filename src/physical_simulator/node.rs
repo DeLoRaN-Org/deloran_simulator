@@ -1,11 +1,35 @@
-
-use std::{ops::{Deref, DerefMut}, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use lorawan::utils::{eui::EUI64, PrettyHexSlice};
-use lorawan_device::{communicator::{CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission}, configs::RadioDeviceConfig, devices::{debug_device::{DebugCommunicator, DebugDevice}, lorawan_device::LoRaWANDevice}};
+use lorawan_device::{
+    communicator::{
+        CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission,
+    },
+    configs::RadioDeviceConfig,
+    devices::{
+        debug_device::{DebugCommunicator, DebugDevice},
+        lorawan_device::LoRaWANDevice,
+    },
+};
 use rand::{distributions::Distribution, Rng, SeedableRng};
-use tokio::{sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}, time::Instant};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::{
+    sync::{
+        mpsc::{Receiver, Sender},
+        Mutex, RwLock,
+    },
+    time::Instant,
+};
 
-use crate::{constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY}, physical_simulator::world::{LOGGER, REGULAR_TRAFFIC_DISTRIBUTION}};
+use crate::{
+    constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY},
+    physical_simulator::world::{LOGGER, REGULAR_TRAFFIC_DISTRIBUTION},
+};
 
 use super::{utils::get_sensitivity, world::World};
 
@@ -13,8 +37,8 @@ use super::{utils::get_sensitivity, world::World};
 pub struct NodeConfig {
     pub position: Position,
 
-    pub transmission_power_dbm: f32,  //14 dbm standard, and 27dbm is the maximum allowed
-    pub receiver_sensitivity: f32,    
+    pub transmission_power_dbm: f32, //14 dbm standard, and 27dbm is the maximum allowed
+    pub receiver_sensitivity: f32,
 
     pub tx_consumption: f32,
     pub rx_consumption: f32,
@@ -43,7 +67,7 @@ impl NodeConfig {
         t.transmission.frequency == self.radio_config.freq &&                    //same frequency
         t.transmission.bandwidth == self.radio_config.bandwidth &&               //same bandwidth
         t.transmission.spreading_factor == self.radio_config.spreading_factor && //same spreading factor
-        t.arrival_stats.rssi > get_sensitivity(&t.transmission)                  //signal strength is greater than receiver sensitivity
+        t.arrival_stats.rssi > get_sensitivity(&t.transmission) //signal strength is greater than receiver sensitivity
     }
 }
 
@@ -63,107 +87,161 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(node_id: u32, device: LoRaWANDevice<NodeCommunicator>, regular_traffic_model: bool) -> Node {
+    pub fn new(
+        node_id: u32,
+        device: LoRaWANDevice<NodeCommunicator>,
+        regular_traffic_model: bool,
+    ) -> Node {
         Node {
             node_id,
             device: DebugDevice::from(device),
-            regular_traffic_model
+            regular_traffic_model,
         }
     }
 
     pub fn get_position(&self) -> Position {
         self.device.communicator().config.position
     }
-    
+
     pub async fn get_state(&self) -> NodeState {
         self.device.communicator().config.get_state().await
     }
-    
+
     pub async fn can_receive_transmission(&self, t: &ReceivedTransmission) -> bool {
-        self.device.communicator().config.can_receive_transmission(t).await
+        self.device
+            .communicator()
+            .config
+            .can_receive_transmission(t)
+            .await
     }
 
     pub async fn run(&mut self, running: Arc<AtomicBool>) {
         let mut rng = rand::rngs::StdRng::from_entropy();
 
-        let mut periodic_delay = REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
+        let mut periodic_delay =
+            REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
         while periodic_delay < 100.0 {
-            periodic_delay = REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
+            periodic_delay =
+                REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng) + (rng.gen_range(-60.0..60.0));
         }
 
+        let sleep_time = rng.gen_range(0..RANDOM_JOIN_DELAY) as f64;
+        //let sleep_time = if self.regular_traffic_model {
+        //    periodic_delay
+        //} else {
+        //    let mut v = 0.0;
+        //    while v < 180.0 {
+        //        v = UNREGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng);
+        //    }
+        //    v
+        //};
+        tokio::time::sleep(Duration::from_secs_f64(rng.gen_range(0..600) as f64)).await;
+        println!("Sleeping for {sleep_time:?}");
+        tokio::time::sleep(Duration::from_secs_f64(sleep_time)).await;
 
-        for i in 0..50 {
-            let sleep_time = if i == 0 {
-                rng.gen_range(0..RANDOM_JOIN_DELAY - FIXED_JOIN_DELAY) as f64
-            } else {
-                rng.gen_range(FIXED_JOIN_DELAY..RANDOM_JOIN_DELAY) as f64
-            };
-            //let sleep_time = if self.regular_traffic_model {
-            //    periodic_delay
-            //} else {
-            //    let mut v = 0.0;
-            //    while v < 180.0 {
-            //        v = UNREGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng);
-            //    }
-            //    v
-            //};
-
-            println!("Sleeping for {sleep_time:?}");
-            tokio::time::sleep(Duration::from_secs_f64(sleep_time)).await;
-
-            let before = Instant::now();                
-            if let Err(e) = self.device.send_join_request().await {
-                    println!("Join failed: {e:?}, retrying...");
+        for _ in 0..1 {
+            let before = Instant::now();
+            if let Err(e) = self
+                .device
+                .join(
+                    Some(3),
+                    Some(Duration::from_secs_f64(
+                        rng.gen_range(FIXED_JOIN_DELAY..RANDOM_JOIN_DELAY) as f64,
+                    )),
+                )
+                .await
+            {
+                println!("Join failed: {e:?}, retrying...");
             }
             let rtt = before.elapsed().as_millis();
-            LOGGER.write(&format!("{},{},{}", World::now(), self.device.dev_eui(), rtt));
+            LOGGER.write(&format!(
+                "{},{},{}",
+                World::now(),
+                self.device.dev_eui(),
+                rtt
+            ));
+        }
 
-            if self.device.is_initialized() {
-                println!("Device {} initialized", PrettyHexSlice(&**self.device.dev_eui()));
-            } else {
-                println!("!!!!! Device {} NOT initialized !!!!!", PrettyHexSlice(&**self.device.dev_eui()));
-            }
+        if self.device.is_initialized() {
+            println!(
+                "Device {} initialized",
+                PrettyHexSlice(&**self.device.dev_eui())
+            );
+        } else {
+            println!(
+                "!!!!! Device {} NOT initialized !!!!!",
+                PrettyHexSlice(&**self.device.dev_eui())
+            );
         }
-        if !self.device.is_initialized() {
-            panic!("Device not initialized");
-        }
-        
+
         let mut errors = 0;
         let mut successes = 0;
 
-        println!("Initialized: {}", PrettyHexSlice(self.device.session().unwrap().network_context().dev_addr()));
+        println!(
+            "Initialized: {}",
+            PrettyHexSlice(self.device.session().unwrap().network_context().dev_addr())
+        );
 
         for i in 0..NUM_PACKETS {
             if !running.load(Ordering::Relaxed) {
                 break;
             }
             //let sleep_time = distribution.sample(&mut rng) + rand::random::<f64>() * 30.0;
-            let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + FIXED_JOIN_DELAY;
-            tokio::time::sleep(Duration::from_secs_f64(sleep_time as f64)).await;
+            //let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + FIXED_JOIN_DELAY;
+            let sleep_time = rng.gen_range(FIXED_JOIN_DELAY..RANDOM_JOIN_DELAY);
+            tokio::time::sleep(Duration::from_secs(sleep_time)).await;
             if !running.load(Ordering::Relaxed) {
                 break;
             }
 
-            let before = Instant::now();                
-            match self.device.send_uplink(Some(format!("###  confirmed {i} message  ###").as_bytes()), true, Some(1), None).await {
+            let before = Instant::now();
+            match self
+                .device
+                .send_uplink(
+                    Some(format!("###  confirmed {i} message  ###").as_bytes()),
+                    true,
+                    Some(1),
+                    None,
+                )
+                .await
+            {
                 Ok(_) => {
-                    println!("Device {} sent and received {i}-th message", PrettyHexSlice(&**self.device.dev_eui()));
+                    println!(
+                        "Device {} sent and received {i}-th message",
+                        PrettyHexSlice(&**self.device.dev_eui())
+                    );
                     let rtt = before.elapsed().as_millis();
                     successes += 1;
-                    LOGGER.write(&format!("{},{},{}",World::now(), self.device.dev_eui(), rtt))
-                },
+                    LOGGER.write(&format!(
+                        "{},{},{}",
+                        World::now(),
+                        self.device.dev_eui(),
+                        rtt
+                    ))
+                }
                 Err(e) => {
                     errors += 1;
+                    let rtt = before.elapsed().as_millis();
+                    LOGGER.write(&format!(
+                        "{},{},{}",
+                        World::now(),
+                        self.device.dev_eui(),
+                        rtt
+                    ));
                     println!("Error sending confirmed message: {e:?}");
-                },
-            }   
+                }
+            }
         }
 
-        println!("Device {} finished with {} successes and {} errors", PrettyHexSlice(&**self.device.dev_eui()), successes, errors);
+        println!(
+            "Device {} finished with {} successes and {} errors",
+            PrettyHexSlice(&**self.device.dev_eui()),
+            successes,
+            errors
+        );
     }
 }
 
- 
 impl Deref for Node {
     type Target = LoRaWANDevice<DebugCommunicator<NodeCommunicator>>;
 
@@ -177,7 +255,6 @@ impl DerefMut for Node {
         &mut self.device
     }
 }
-
 
 #[derive(Debug)]
 pub struct NodeCommunicator {
@@ -194,8 +271,12 @@ pub struct NodeCommunicator {
 }
 
 impl NodeCommunicator {
-    pub fn new(sender: Sender<Transmission>, receiver: Receiver<ReceivedTransmission>,  config: NodeConfig) -> NodeCommunicator {
-    NodeCommunicator {
+    pub fn new(
+        sender: Sender<Transmission>,
+        receiver: Receiver<ReceivedTransmission>,
+        config: NodeConfig,
+    ) -> NodeCommunicator {
+        NodeCommunicator {
             sender,
             receiver: RwLock::new(receiver),
             config,
@@ -221,7 +302,7 @@ impl NodeCommunicator {
     pub async fn change_state(&mut self, new_state: NodeState) {
         let now = Instant::now();
         let duration = now.duration_since(self.last_status_change);
-        
+
         let mut current_state = self.config.node_state.lock().await;
         match *current_state {
             NodeState::Idle => self.idle_time += duration,
@@ -238,14 +319,15 @@ impl NodeCommunicator {
     }
 }
 
-
 impl LoRaWANCommunicator for NodeCommunicator {
-    type Config=NodeConfig;
+    type Config = NodeConfig;
 
     async fn from_config(_config: &Self::Config) -> Result<Self, CommunicatorError> {
-        unimplemented!("Can't create nodecommunicator from config, it needs a sender and a receiver")
+        unimplemented!(
+            "Can't create nodecommunicator from config, it needs a sender and a receiver"
+        )
     }
-    
+
     async fn send(
         &self,
         bytes: &[u8],
@@ -265,11 +347,14 @@ impl LoRaWANCommunicator for NodeCommunicator {
         };
 
         let toa = t.time_on_air();
-        *self.config.node_state.lock().await = NodeState::Transmitting;        
-        
-        let ret = self.sender.send(t).await.map_err(|_| CommunicatorError::Radio("Error sending message to channel".to_owned()));
+        *self.config.node_state.lock().await = NodeState::Transmitting;
+
+        let ret =
+            self.sender.send(t).await.map_err(|_| {
+                CommunicatorError::Radio("Error sending message to channel".to_owned())
+            });
         tokio::time::sleep(Duration::from_millis(toa as u64)).await;
-        
+
         *self.config.node_state.lock().await = NodeState::Idle;
         ret
     }
@@ -278,21 +363,22 @@ impl LoRaWANCommunicator for NodeCommunicator {
         &self,
         timeout: Option<Duration>,
     ) -> Result<Vec<ReceivedTransmission>, CommunicatorError> {
-        
         *self.config.node_state.lock().await = NodeState::Receiving;
-        
+
         let ret = if let Some(timeout) = timeout {
             tokio::time::timeout(timeout, self.receiver.write().await.recv()).await
         } else {
             Ok(self.receiver.write().await.recv().await)
         };
-        
+
         *self.config.node_state.lock().await = NodeState::Idle;
 
         if let Ok(Some(v)) = ret {
             Ok(vec![v])
         } else {
-            Err(CommunicatorError::Radio("Error receiving message from channel".to_owned()))
+            Err(CommunicatorError::Radio(
+                "Error receiving message from channel".to_owned(),
+            ))
         }
     }
 }

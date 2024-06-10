@@ -71,7 +71,7 @@ impl NetworkControllerBridge {
             while r1.load(Ordering::Relaxed) {
                 let received_transmission = self.receiver.recv().await.ok_or(CommunicatorError::Radio("Receiver channel closed unexpectedly".to_string())).unwrap();
 
-                //println!("[NC{}] Received uplink transmission with rssi {}", self.id, received_transmission.arrival_stats.rssi);
+                println!("[NC{}] Received uplink transmission with rssi {}", self.id, received_transmission.arrival_stats.rssi);
 
                 let bytes = serde_json::to_string(&received_transmission).unwrap();
                 //println!("{bytes} - {}", bytes.as_bytes().len());
@@ -94,7 +94,7 @@ impl NetworkControllerBridge {
                 transmission.start_time = World::now();
                 transmission.starting_power = self.node_config.transmission_power_dbm;
     
-                //println!("[NC{}] Received downlink transmission", self.id);
+                println!("[NC{}] Received downlink transmission", self.id);
                 self.sender.send(transmission).await.map_err(|_| CommunicatorError::Radio("Error sending message to world".to_string())).unwrap();
             }
         });

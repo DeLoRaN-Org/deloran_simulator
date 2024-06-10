@@ -133,10 +133,10 @@ async fn main() {
     let path_loss = PathLossModel::LogDistanceNormalShadowing;
     let mut w = World::new(path_loss);
 
-    let nc1 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 100000.0,      y:-100000.0,      z: 100.0 });
-    let nc2 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20 ), 9090)), Position { x: 100000.0,      y: 100000.0,      z: 100.0 });
-    let nc3 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81 ), 9090)), Position { x:-100000.0,      y:-100000.0,      z: 100.0 });
-    let nc4 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x:-100000.0,      y: 100000.0,      z: 100.0 });
+    let nc1 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 155), 9090)), Position { x: 100.0,      y:-100.0,      z: 100.0 });
+    let nc2 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 20 ), 9090)), Position { x: 100.0,      y: 100.0,      z: 100.0 });
+    let nc3 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 81 ), 9090)), Position { x:-100.0,      y:-100.0,      z: 100.0 });
+    let nc4 = make_nc_config(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 223), 9090)), Position { x:-100.0,      y: 100.0,      z: 100.0 });
     
     //let mut base_frequency = 868_000_000.0;
     //let channels = [
