@@ -4,18 +4,14 @@ use lorawan_device::{
         CommunicatorError, LoRaWANCommunicator, Position, ReceivedTransmission, Transmission,
     },
     configs::RadioDeviceConfig,
-    devices::{
-        debug_device::{DebugCommunicator, DebugDevice},
-        lorawan_device::LoRaWANDevice,
-    },
+    devices::
+        lorawan_device::LoRaWANDevice
+    , split_communicator::{LoRaReceiver, LoRaSender, SplitCommunicator},
 };
 use rand::{distributions::Distribution, Rng, SeedableRng};
 use std::{
     ops::{Deref, DerefMut},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
@@ -28,7 +24,7 @@ use tokio::{
 
 use crate::{
     constants::{FIXED_JOIN_DELAY, NUM_PACKETS, RANDOM_JOIN_DELAY},
-    physical_simulator::world::{LOGGER, REGULAR_TRAFFIC_DISTRIBUTION},
+    physical_simulator::world::LOGGER, traffic_models::REGULAR_TRAFFIC_DISTRIBUTION,
 };
 
 use super::{utils::get_sensitivity, world::World};
@@ -82,7 +78,7 @@ pub enum NodeState {
 #[derive(Debug)]
 pub struct Node {
     pub node_id: u32,
-    pub device: LoRaWANDevice<DebugCommunicator<NodeCommunicator>>,
+    pub device: LoRaWANDevice<NodeCommunicator>,
     pub regular_traffic_model: bool,
 }
 
@@ -94,9 +90,13 @@ impl Node {
     ) -> Node {
         Node {
             node_id,
-            device: DebugDevice::from(device),
+            device,
             regular_traffic_model,
         }
+    }
+
+    pub fn into_device(self) -> LoRaWANDevice<NodeCommunicator> {
+        self.device
     }
 
     pub fn get_position(&self) -> Position {
@@ -115,7 +115,7 @@ impl Node {
             .await
     }
 
-    pub async fn run(&mut self, running: Arc<AtomicBool>) {
+    pub async fn run(&mut self) {
         let mut rng = rand::rngs::StdRng::from_entropy();
 
         let mut periodic_delay =
@@ -135,7 +135,7 @@ impl Node {
         //    }
         //    v
         //};
-        tokio::time::sleep(Duration::from_secs_f64(rng.gen_range(0..600) as f64)).await;
+        tokio::time::sleep(Duration::from_secs_f64(rng.gen_range(0..1200) as f64)).await;
         println!("Sleeping for {sleep_time:?}");
         tokio::time::sleep(Duration::from_secs_f64(sleep_time)).await;
 
@@ -183,17 +183,11 @@ impl Node {
         );
 
         for i in 0..NUM_PACKETS {
-            if !running.load(Ordering::Relaxed) {
-                break;
-            }
             //let sleep_time = distribution.sample(&mut rng) + rand::random::<f64>() * 30.0;
             //let sleep_time = rand::random::<u64>() % RANDOM_JOIN_DELAY + FIXED_JOIN_DELAY;
             let sleep_time = rng.gen_range(FIXED_JOIN_DELAY..RANDOM_JOIN_DELAY);
             tokio::time::sleep(Duration::from_secs(sleep_time)).await;
-            if !running.load(Ordering::Relaxed) {
-                break;
-            }
-
+            
             let before = Instant::now();
             match self
                 .device
@@ -243,7 +237,7 @@ impl Node {
 }
 
 impl Deref for Node {
-    type Target = LoRaWANDevice<DebugCommunicator<NodeCommunicator>>;
+    type Target = LoRaWANDevice<NodeCommunicator>;
 
     fn deref(&self) -> &Self::Target {
         &self.device
@@ -349,14 +343,11 @@ impl LoRaWANCommunicator for NodeCommunicator {
         let toa = t.time_on_air();
         *self.config.node_state.lock().await = NodeState::Transmitting;
 
-        let ret =
-            self.sender.send(t).await.map_err(|_| {
-                CommunicatorError::Radio("Error sending message to channel".to_owned())
-            });
+        self.sender.send(t).await.map_err(|_| { CommunicatorError::Radio("Error sending message to channel".to_owned())})?;
         tokio::time::sleep(Duration::from_millis(toa as u64)).await;
 
         *self.config.node_state.lock().await = NodeState::Idle;
-        ret
+        Ok(())
     }
 
     async fn receive(
@@ -380,5 +371,97 @@ impl LoRaWANCommunicator for NodeCommunicator {
                 "Error receiving message from channel".to_owned(),
             ))
         }
+    }
+}
+
+
+#[derive(Debug)]
+pub struct NodeSender {
+    sender: Sender<Transmission>,
+    config: NodeConfig,
+}
+
+impl NodeSender {
+    pub fn config(&self) -> &NodeConfig {
+        &self.config
+    }
+}
+
+impl NodeReceiver {
+    pub fn config(&self) -> &NodeConfig {
+        &self.config
+    }
+}
+
+#[derive(Debug)]
+pub struct NodeReceiver {
+    receiver: RwLock<Receiver<ReceivedTransmission>>,
+    config: NodeConfig,
+}
+
+impl LoRaSender for NodeSender {
+    type OptionalInfo=();
+
+    async fn send(&self, bytes: &[u8], _: Option<Self::OptionalInfo>) -> Result<(), CommunicatorError> {
+        let t = Transmission {
+            start_position: self.config.position,
+            start_time: World::now(),
+            frequency: self.config.radio_config.freq,
+            bandwidth: self.config.radio_config.bandwidth,
+            spreading_factor: self.config.radio_config.spreading_factor,
+            code_rate: self.config.radio_config.code_rate,
+            starting_power: self.config.transmission_power_dbm,
+            uplink: true,
+            payload: bytes.to_vec(),
+        };
+
+        let toa = t.time_on_air();
+        *self.config.node_state.lock().await = NodeState::Transmitting;
+
+        self.sender.send(t).await.map_err(|_| { CommunicatorError::Radio("Error sending message to channel".to_owned())})?;
+        tokio::time::sleep(Duration::from_millis(toa as u64)).await;
+
+        *self.config.node_state.lock().await = NodeState::Idle;
+        Ok(())
+    }
+}
+
+impl LoRaReceiver for NodeReceiver {
+    async fn receive(&self, timeout: Option<Duration>) -> Result<Vec<ReceivedTransmission>, CommunicatorError> {
+        *self.config.node_state.lock().await = NodeState::Receiving;
+
+        let ret = if let Some(timeout) = timeout {
+            tokio::time::timeout(timeout, self.receiver.write().await.recv()).await
+        } else {
+            Ok(self.receiver.write().await.recv().await)
+        };
+
+        *self.config.node_state.lock().await = NodeState::Idle;
+
+        if let Ok(Some(v)) = ret {
+            Ok(vec![v])
+        } else {
+            Err(CommunicatorError::Radio(
+                "Error receiving message from channel".to_owned(),
+            ))
+        }
+    }
+}
+
+impl SplitCommunicator for NodeCommunicator {
+    type Sender = NodeSender;
+    type Receiver = NodeReceiver;
+
+    async fn split_communicator(self) -> Result<(Self::Sender, Self::Receiver), CommunicatorError> {
+        Ok((
+            NodeSender {
+                sender: self.sender,
+                config: self.config.clone(),
+            },
+            NodeReceiver {
+                receiver: self.receiver,
+                config: self.config.clone(),
+            },
+        ))
     }
 }

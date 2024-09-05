@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::{atomic::{AtomicBool, Ordering}, Arc}};
+use std::{net::SocketAddr, sync::Arc};
 
 use lorawan_device::communicator::{CommunicatorError, Position, ReceivedTransmission, Transmission};
 use tokio::{net::UdpSocket, sync::mpsc::{Receiver, Sender}};
@@ -6,7 +6,7 @@ use tokio::{net::UdpSocket, sync::mpsc::{Receiver, Sender}};
 use super::{node::NodeConfig, utils::get_sensitivity, world::World};
 
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NetworkControllerBridgeConfig {
     pub network_controller_address: SocketAddr,
     pub node_config: NodeConfig,
@@ -21,6 +21,7 @@ impl NetworkControllerBridgeConfig {
 }
 
 
+#[derive(Debug)]
 pub struct NetworkControllerBridge {
     id: u32,
     network_controller_addr: SocketAddr,
@@ -58,32 +59,31 @@ impl NetworkControllerBridge {
         t.arrival_stats.rssi > get_sensitivity(&t.transmission)        //signal strength is greater than receiver sensitivity
     }
 
-    pub async fn start(mut self, running: Arc<AtomicBool>) {
+    pub async fn start(mut self) {
         let udp_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
         udp_socket.connect(self.network_controller_addr).await.unwrap();
 
         let udp_socket = Arc::new(udp_socket);
         let udp_socket_clone = udp_socket.clone();
 
-        let r1 = running.clone();
 
         let t1 = tokio::spawn(async move {
-            while r1.load(Ordering::Relaxed) {
+            loop {
                 let received_transmission = self.receiver.recv().await.ok_or(CommunicatorError::Radio("Receiver channel closed unexpectedly".to_string())).unwrap();
 
-                println!("[NC{}] Received uplink transmission with rssi {}", self.id, received_transmission.arrival_stats.rssi);
+                //println!("[NC{}] Received uplink transmission with rssi {}", self.id, received_transmission.arrival_stats.rssi);
 
                 let bytes = serde_json::to_string(&received_transmission).unwrap();
                 //println!("{bytes} - {}", bytes.as_bytes().len());
 
-                udp_socket.send(bytes.as_bytes()).await.map_err(|e| CommunicatorError::Radio(e.to_string())).unwrap();
+                udp_socket.send(bytes.as_bytes()).await.map_err(|e| CommunicatorError::Radio(e.to_string())).unwrap_or_else(|e| panic!("Error {e:?} sending message to network controller {}", self.network_controller_addr));
             }
         });
         
 
         let t2 = tokio::spawn(async move {
             let mut buffer = [0u8; 1024];
-            while running.load(Ordering::Relaxed) {
+            loop {
                 let size = udp_socket_clone.recv(&mut buffer).await.unwrap();
     
                 
@@ -94,7 +94,7 @@ impl NetworkControllerBridge {
                 transmission.start_time = World::now();
                 transmission.starting_power = self.node_config.transmission_power_dbm;
     
-                println!("[NC{}] Received downlink transmission", self.id);
+                //println!("[NC{}] Received downlink transmission", self.id);
                 self.sender.send(transmission).await.map_err(|_| CommunicatorError::Radio("Error sending message to world".to_string())).unwrap();
             }
         });

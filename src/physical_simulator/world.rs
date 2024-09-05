@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    sync::{atomic::{AtomicBool, Ordering}, Arc},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -10,14 +10,20 @@ use lorawan_device::{
     communicator::{ArrivalStats, Position, ReceivedTransmission, Transmission},
     devices::lorawan_device::LoRaWANDevice,
 };
+use rand::{prelude::Distribution, Rng, SeedableRng};
 use tokio::sync::{
     mpsc::{self, Sender},
     Mutex, Notify,
 };
 
-use crate::{constants::{ACTIVE_LOGGER, LOGGER_PRINTLN, PRINT_LOG_PATH, RTT_LOG_PATH, STARTING_DEV_NONCE}, logger::Logger, traffic_models::TrafficDistribution};
+use crate::{
+    constants::{ACTIVE_LOGGER, LOGGER_PRINTLN, PRINT_LOG_PATH, RTT_LOG_PATH, STARTING_DEV_NONCE},
+    logger::Logger, traffic_models::REGULAR_TRAFFIC_DISTRIBUTION,
+};
 
 use super::{
+    chirpstack_bridge::{ChirpstackBridge, ChirpstackBridgeConfig},
+    multi_node::MultiNode,
     network_controller_bridge::{NetworkControllerBridge, NetworkControllerBridgeConfig},
     node::{Node, NodeCommunicator, NodeConfig},
     path_loss::PathLossModel,
@@ -27,19 +33,20 @@ lazy_static! {
     pub static ref LOGGER: Logger = Logger::new(RTT_LOG_PATH, ACTIVE_LOGGER, LOGGER_PRINTLN);
     pub static ref PRINTER_LOGGER: Logger = Logger::new(PRINT_LOG_PATH, ACTIVE_LOGGER, LOGGER_PRINTLN);
     //pub static ref LOGGER_DEVICES: Logger = Logger::new("devices_complete.csv");
-
-    pub static ref REGULAR_TRAFFIC_DISTRIBUTION: TrafficDistribution = TrafficDistribution::new("loed_regular_traffic_distribution.csv", String::from("regular"));
-    pub static ref UNREGULAR_TRAFFIC_DISTRIBUTION: TrafficDistribution = TrafficDistribution::new("loed_unregular_traffic_distribution.csv", String::from("unregular"));
 }
 
+#[derive(Debug)]
 pub enum EntityConfig {
     Node(NodeConfig),
     NetworkController(NetworkControllerBridgeConfig),
+    ChipstackBridge(ChirpstackBridgeConfig),
 }
 
+#[derive(Debug)]
 pub enum Entity {
     Node(Node),
     NetworkController(NetworkControllerBridge),
+    ChipstackBridge(ChirpstackBridge),
 }
 
 impl EntityConfig {
@@ -47,6 +54,7 @@ impl EntityConfig {
         match self {
             EntityConfig::Node(node) => node.position,
             EntityConfig::NetworkController(nc) => nc.node_config.position,
+            EntityConfig::ChipstackBridge(c) => c.node_config.position,
         }
     }
 
@@ -54,22 +62,29 @@ impl EntityConfig {
         match self {
             EntityConfig::Node(node) => node.can_receive_transmission(t).await,
             EntityConfig::NetworkController(nc) => nc.can_receive_transmission(t),
+            EntityConfig::ChipstackBridge(c) => c.can_receive_transmission(t),
         }
     }
 }
 
+pub struct WorldConfig {
+    pub path_loss_model: PathLossModel,
+    //TODO: add more configuration options
+}
+
+#[derive(Debug)]
 pub struct World {
     path_loss_model: PathLossModel,
 
     entity_configs: Vec<(EntityConfig, Sender<ReceivedTransmission>)>,
     entities: Vec<Entity>,
-    join_handlers: Vec<tokio::task::JoinHandle<()>>,
+    //join_handlers: Vec<tokio::task::JoinHandle<()>>,
 
     transmissions_on_air: Arc<Mutex<Vec<Transmission>>>,
 
     sender: Sender<Transmission>,
 
-    incoming_message: Arc<Notify>,
+    //incoming_message: Arc<Notify>,
     start_notifier: Arc<Notify>,
 
     nc_counter: u32,
@@ -80,29 +95,23 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(path_loss_model: PathLossModel) -> World {
+    pub fn new(config: WorldConfig) -> World {
         let (sender, mut receiver) = mpsc::channel::<Transmission>(10000);
         let transmissions_on_air = Arc::new(Mutex::new(Vec::new()));
         let toac = transmissions_on_air.clone();
         let start_notifier = Arc::new(Notify::new());
-        let incoming_message = Arc::new(Notify::new());
+        //let incoming_message = Arc::new(Notify::new());
 
-        let imc = incoming_message.clone();
+        //let imc = incoming_message.clone();
         let snc = start_notifier.clone();
 
         tokio::spawn(async move {
             snc.notified().await;
             loop {
+                //println!("Waiting for transmissionssssssssss...........");
                 let t = receiver.recv().await.unwrap();
-                let toa = t.time_on_air();
-
-                let imc_clone = imc.clone();
-                tokio::spawn(async move {
-                    //println!("Waiting {toa} ms for transmission to end");
-                    tokio::time::sleep(Duration::from_millis(toa as u64)).await;
-                    imc_clone.notify_waiters();
-                });
-
+                //let toa = t.time_on_air();
+                //println!("Transmission on air for {toa} ms");
                 toac.lock().await.push(t);
                 //println!("[World] added transmission to transmissions_on_air");
             }
@@ -111,11 +120,11 @@ impl World {
         World {
             entity_configs: Vec::new(),
             entities: Vec::new(),
-            join_handlers: Vec::new(),
-            path_loss_model,
+            //join_handlers: Vec::new(),
+            path_loss_model: config.path_loss_model,
             transmissions_on_air,
             sender,
-            incoming_message,
+            //incoming_message,
             start_notifier,
             nc_counter: 0,
             node_counter: 0,
@@ -139,9 +148,15 @@ impl World {
             .as_millis()
     }
 
-    pub async fn device_routine(mut node: Node, running: Arc<AtomicBool>) {
-        node.set_dev_nonce(STARTING_DEV_NONCE);
-        node.run(running).await;
+    pub async fn multi_node_routine(mut multi_node: MultiNode) {
+        //println!("BEGINNING MULTI NODE ROUTINE");
+        multi_node.prepare().await;
+        //println!("PREPARED MULTI NODE");
+        multi_node.run().await;
+    }
+
+    pub async fn device_routine(mut node: Node) {
+        node.run().await;
     }
 
     pub fn add_node(&mut self, device: Device, config: NodeConfig, regular_traffic_model: bool) {
@@ -149,14 +164,16 @@ impl World {
 
         let c2 = config.clone();
 
-        let node = Node::new(
+        let mut node = Node::new(
             self.node_counter,
             LoRaWANDevice::new(
                 device,
                 NodeCommunicator::new(self.sender.clone(), receiver, config),
             ),
-            regular_traffic_model
+            regular_traffic_model,
         );
+        node.set_dev_nonce(STARTING_DEV_NONCE);
+
         self.entities.push(Entity::Node(node));
         self.node_counter += 1;
 
@@ -164,8 +181,8 @@ impl World {
         self.entity_configs.push((node_config, sender));
     }
 
-    pub async fn networ_controller_routine(nc: NetworkControllerBridge, running: Arc<AtomicBool>) {
-        nc.start(running).await;
+    pub async fn network_controller_routine(nc: NetworkControllerBridge) {
+        nc.start().await;
     }
 
     pub fn add_network_controller(&mut self, nc_config: NetworkControllerBridgeConfig) {
@@ -179,6 +196,22 @@ impl World {
         self.entities.push(Entity::NetworkController(nc));
 
         let nc = EntityConfig::NetworkController(nc_config);
+        self.nc_counter += 1;
+        self.entity_configs.push((nc, sender));
+    }
+
+    pub fn add_chirpstack_gw(&mut self, c_config: ChirpstackBridgeConfig) {
+        let (sender, receiver) = tokio::sync::mpsc::channel::<ReceivedTransmission>(10000);
+        let cb = ChirpstackBridge::new(
+            self.nc_counter,
+            self.sender.clone(),
+            receiver,
+            c_config.clone(),
+        );
+
+        self.entities.push(Entity::ChipstackBridge(cb));
+
+        let nc = EntityConfig::ChipstackBridge(c_config);
         self.nc_counter += 1;
         self.entity_configs.push((nc, sender));
     }
@@ -250,8 +283,16 @@ impl World {
             && World::sf_collision(t1, t2)
     }
 
-    async fn create_received_transmission(&self, t: &Transmission, entity: &EntityConfig) -> Option<ReceivedTransmission> {
-        let t_rssi = t.starting_power- self.path_loss_model.get_path_loss(entity.get_position().await.distance(&t.start_position),t.frequency);
+    async fn create_received_transmission(
+        &self,
+        t: &Transmission,
+        entity: &EntityConfig,
+    ) -> Option<ReceivedTransmission> {
+        let t_rssi = t.starting_power
+            - self.path_loss_model.get_path_loss(
+                entity.get_position().await.distance(&t.start_position),
+                t.frequency,
+            );
         let t_rx: ReceivedTransmission = ReceivedTransmission {
             transmission: t.clone(),
             arrival_stats: ArrivalStats {
@@ -270,17 +311,18 @@ impl World {
     async fn check_collisions_and_upload(&mut self) {
         let ended_transmissions = {
             let mut transmissions = self.transmissions_on_air.lock().await;
-            let (ended_transmissions, not_endend_transmission) = transmissions.iter().cloned().partition(|t| t.ended());
+            let (ended_transmissions, not_endend_transmission) =
+                transmissions.iter().cloned().partition(|t| t.ended());
             *transmissions = not_endend_transmission;
             ended_transmissions
         };
 
         let mut potentially_collided_transmissions = Vec::new();
 
-        println!(
-            "Checking for collisions, number of ended transmissions: {}",
-            ended_transmissions.len()
-        );
+        //println!(
+        //    "Checking for collisions, number of ended transmissions: {}",
+        //    ended_transmissions.len()
+        //);
 
         for (i, t1) in ended_transmissions.iter().enumerate() {
             let mut collided = false;
@@ -305,8 +347,10 @@ impl World {
             }
         }
 
-
-        println!("Number of collisions: {}", potentially_collided_transmissions.len());
+        //println!(
+        //    "Number of collisions: {}",
+        //    potentially_collided_transmissions.len()
+        //);
         self.collision_counter += potentially_collided_transmissions.len() as u32;
 
         for (entity, sender) in self.entity_configs.iter() {
@@ -329,33 +373,58 @@ impl World {
 
     pub async fn run(&mut self, duration: Option<Duration>) {
         self.start_notifier.notify_waiters();
-
+        let mut multi_node = MultiNode::default();
 
         let entities = std::mem::take(&mut self.entities);
-        
-        let running: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
 
-        for entity in entities.into_iter() {
-            self.join_handlers.push(match entity {
+        for entity in entities {
+            match entity {
                 Entity::Node(node) => {
-                    tokio::spawn(World::device_routine(node, running.clone()))
+                    let mut rng = rand::rngs::StdRng::from_entropy();
+                    
+                    let node_delay = if rng.gen_range(0.0..1.0) < 0.86 {
+                        let mut delay = 0.0;
+                        while delay < 30.0 {
+                            delay = REGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng)
+                        }
+                        Duration::from_secs_f64(delay)
+                    } else {
+                        Duration::ZERO
+                    };
+                    multi_node.add_node(node, node_delay);
                 }
                 Entity::NetworkController(nc) => {
-                    tokio::spawn(World::networ_controller_routine(nc, running.clone()))
+                    tokio::spawn(World::network_controller_routine(nc));
                 }
-            })
+                Entity::ChipstackBridge(c) => {
+                    tokio::spawn(c.start());
+                }
+            }
         }
-        
+
+        tokio::spawn(World::multi_node_routine(multi_node));
+
+        tokio::spawn(async move {
+            use tokio::runtime::Handle;
+            let handle = Handle::current().metrics();
+
+            loop {
+                println!("Alive {} tasks", handle.num_alive_tasks());
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+            
+        });
+
         let now = Instant::now();
-        while running.load(Ordering::Relaxed) {
-            self.incoming_message.notified().await;
+        loop {
+            //self.incoming_message.notified().await;
             //println!("[World] Checking for collisions");
+            tokio::time::sleep(Duration::from_millis(19)).await;
             self.check_collisions_and_upload().await;
             //println!("[World] Checked for collisions");
 
             if let Some(duration) = duration {
                 if now.elapsed() > duration {
-                    running.store(false, Ordering::Relaxed);
                     break;
                 }
             }
@@ -363,7 +432,10 @@ impl World {
 
         println!("END STATS: ");
         println!("Number of collisions: {}", self.collision_counter);
-        println!("Number of successful uploads: {}", self.successful_upload_counter);
+        println!(
+            "Number of successful uploads: {}",
+            self.successful_upload_counter
+        );
         println!("Simulation ended");
     }
 }
@@ -379,11 +451,11 @@ fn simulated_transmission() {
         start_time: World::now(),
         frequency: 868_100_000.0,
         bandwidth: LoRaBandwidth::BW125,
-        spreading_factor: lorawan::physical_parameters::SpreadingFactor::SF12,
+        spreading_factor: lorawan::physical_parameters::SpreadingFactor::SF7,
         code_rate: lorawan::physical_parameters::CodeRate::CR4_5,
         starting_power: 14.0,
         uplink: true,
-        payload: vec![0; 32],
+        payload: vec![0; 24],
     };
 
     println!("Time on air: {}", t1.time_on_air());
@@ -396,6 +468,7 @@ fn simulated_transmission() {
         z: 0.0,
     };
 
-    let rssi = t1.starting_power - path_loss.get_path_loss(t1.start_position.distance(&origin), t1.frequency);
+    let rssi = t1.starting_power
+        - path_loss.get_path_loss(t1.start_position.distance(&origin), t1.frequency);
     println!("RSSI: {}", rssi);
 }

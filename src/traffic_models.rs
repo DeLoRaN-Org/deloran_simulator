@@ -2,8 +2,16 @@ use core::fmt;
 use std::fmt::{Debug, Formatter};
 use std::path::Path;
 
+use lazy_static::lazy_static;
 use rand::Rng;
 use rand::distributions::Distribution;
+
+
+lazy_static! {
+    pub static ref REGULAR_TRAFFIC_DISTRIBUTION: TrafficDistribution = TrafficDistribution::new("loed_regular_traffic_distribution.csv", String::from("regular"));
+    pub static ref UNREGULAR_TRAFFIC_DISTRIBUTION: TrafficDistribution = TrafficDistribution::new("loed_unregular_traffic_distribution.csv", String::from("unregular"));
+}
+
 
 // Define your custom distribution
 pub struct TrafficDistribution {
