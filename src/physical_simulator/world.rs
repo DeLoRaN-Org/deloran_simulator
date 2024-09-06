@@ -263,10 +263,10 @@ impl World {
         let power_threshold = 6.0; //dB, it is hardcoded both in lorasim and flora
         let t1_rssi = t1.starting_power
             - path_loss_model
-                .get_path_loss(device_position.distance(&t1.start_position), t1.frequency);
+                .get_path_loss(device_position.distance(&t1.start_position).into(), t1.frequency);
         let t2_rssi = t2.starting_power
             - path_loss_model
-                .get_path_loss(device_position.distance(&t2.start_position), t2.frequency);
+                .get_path_loss(device_position.distance(&t2.start_position).into(), t2.frequency);
         if (t1_rssi - t2_rssi).abs() < power_threshold {
             None
         } else if t1_rssi - t2_rssi < power_threshold {
@@ -288,11 +288,7 @@ impl World {
         t: &Transmission,
         entity: &EntityConfig,
     ) -> Option<ReceivedTransmission> {
-        let t_rssi = t.starting_power
-            - self.path_loss_model.get_path_loss(
-                entity.get_position().await.distance(&t.start_position),
-                t.frequency,
-            );
+        let t_rssi = t.starting_power - self.path_loss_model.get_path_loss(entity.get_position().await.distance(&t.start_position).into(),t.frequency,);
         let t_rx: ReceivedTransmission = ReceivedTransmission {
             transmission: t.clone(),
             arrival_stats: ArrivalStats {
@@ -469,6 +465,6 @@ fn simulated_transmission() {
     };
 
     let rssi = t1.starting_power
-        - path_loss.get_path_loss(t1.start_position.distance(&origin), t1.frequency);
+        - path_loss.get_path_loss(t1.start_position.distance(&origin).into(), t1.frequency);
     println!("RSSI: {}", rssi);
 }

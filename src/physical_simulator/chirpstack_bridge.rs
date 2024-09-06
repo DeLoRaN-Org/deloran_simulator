@@ -62,20 +62,20 @@ impl ChirpstackBridge {
         t.arrival_stats.rssi > get_sensitivity(&t.transmission)        //signal strength is greater than receiver sensitivity
     }
 
-    fn round_fq_u32(fq: f32) -> u32 {
+    fn round_fq_u32(fq: f64) -> u32 {
         let f: [u32; 8] = [868_100_000, 868_300_000, 868_500_000, 867_100_000, 867_300_000, 867_500_000, 867_700_000, 867_900_000];
         for ff in f {
-            if (fq - ff as f32).abs() < 1000.0 {
+            if (fq - ff as f64).abs() < 1000.0 {
                 return ff;
             }
         }
         f[0]
     }
 
-    fn round_fq_f32(fq: u32) -> f32 {
-        let f: [f32; 8] = [868_100_000.0, 868_300_000.0, 868_500_000.0, 867_100_000.0, 867_300_000.0, 867_500_000.0, 867_700_000.0, 867_900_000.0];
+    fn round_fq_f64(fq: u32) -> f64 {
+        let f: [f64; 8] = [868_100_000.0, 868_300_000.0, 868_500_000.0, 867_100_000.0, 867_300_000.0, 867_500_000.0, 867_700_000.0, 867_900_000.0];
         for ff in f {
-            if (fq as f32 - ff).abs() < 1000.0 {
+            if (fq as f64 - ff).abs() < 1000.0 {
                 return ff;
             }
         }
@@ -166,7 +166,7 @@ impl ChirpstackBridge {
                 let transmission = Transmission {
                     start_position: self.node_config.position,
                     start_time: World::now(),
-                    frequency: Self::round_fq_f32(info.frequency),
+                    frequency: Self::round_fq_f64(info.frequency),
                     bandwidth: l,
                     spreading_factor: SpreadingFactor::new(lora_modulation.spreading_factor as u8),
                     code_rate: CodeRate::default(),

@@ -20,27 +20,27 @@ pub enum PathLossModel {
 
 
 impl PathLossModel {
-    fn normal(mean: f32, sd: f32) -> f32 {
+    fn normal(mean: f64, sd: f64) -> f64 {
         let mut rng = rand::thread_rng();
-        let u1: f32 = rng.gen();
-        let u2: f32 = rng.gen();
-        ((-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()) as f32 * sd + mean
+        let u1: f64 = rng.gen();
+        let u2: f64 = rng.gen();
+        ((-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()) as f64 * sd + mean
     }
     
-    pub fn get_path_loss(&self, distance: f32, frequency: f32) -> f32 {
+    pub fn get_path_loss(&self, distance: f64, frequency: f64) -> f32 {
         match self {
-            PathLossModel::FreeSpace => 20.0 * distance.log10() + 20.0 * frequency.log10() - 147.55,
+            PathLossModel::FreeSpace => (20.0 * distance.log10() + 20.0 * frequency.log10() - 147.55) as f32,
             PathLossModel::LogDistanceNormalShadowing => {
                 //from Do LoRa Low-Power Wide-Area Networks Scale?
                 let d0 = 40.0;
-                let gamma: f32 = 2.08; 
-                let sigma: f32 = 3.57;
-                //let pl_d0_db: f32 = 127.41;
+                let gamma: f64 = 2.08; 
+                let sigma: f64 = 3.57;
+                //let pl_d0_db: f64 = 127.41;
                 
-                let pl_d0_db: f32 = 87.41; //custom value to better fit the simulation
+                let pl_d0_db: f64 = 87.41; //custom value to better fit the simulation
 
                 //classic formula
-                pl_d0_db + 10.0 * gamma * (distance / d0).log10() + Self::normal(0.0, sigma)
+                (pl_d0_db + 10.0 * gamma * (distance / d0).log10() + Self::normal(0.0, sigma)) as f32
             },
             
         }

@@ -15,7 +15,7 @@ use tokio::{
 };
 
 use crate::{
-    logger::Logger, physical_simulator::world::World, traffic_models::UNREGULAR_TRAFFIC_DISTRIBUTION
+    constants::{FIXED_JOIN_DELAY, FIXED_PACKET_DELAY, RANDOM_JOIN_DELAY, RANDOM_PACKET_DELAY}, logger::Logger, physical_simulator::world::World, traffic_models::UNREGULAR_TRAFFIC_DISTRIBUTION
 };
 
 use super::node::{Node, NodeReceiver, NodeSender};
@@ -140,9 +140,13 @@ impl MultiNode {
                     )
                     .unwrap();
 
-                //let delay = Duration::from_secs(rng.gen_range(FIXED_JOIN_DELAY..RANDOM_JOIN_DELAY));
+                //let complete_delay = Duration::from_secs(rng.gen_range(FIXED_PACKET_DELAY..RANDOM_PACKET_DELAY));
                 let complete_delay = if node_delay.is_zero() {
-                    Duration::from_secs_f64(UNREGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng))
+                    let mut delay = Duration::ZERO;
+                    while delay.as_secs() < 30 {
+                        delay = Duration::from_secs_f64(UNREGULAR_TRAFFIC_DISTRIBUTION.sample(&mut rng))
+                    }
+                    delay
                 } else {
                     *node_delay
                 };

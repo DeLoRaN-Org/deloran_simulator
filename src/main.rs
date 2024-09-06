@@ -35,7 +35,7 @@ use tokio::sync::Mutex;
 use deloran_simulator::constants::*;
 
 lazy_static! {
-    pub static ref RADIO_PARAMETERS: Vec<(SpreadingFactor, LoRaBandwidth, f32)> = {
+    pub static ref RADIO_PARAMETERS: Vec<(SpreadingFactor, LoRaBandwidth, f64)> = {
         let mut vec = Vec::new();
         for sf in [
             SpreadingFactor::SF7,
@@ -83,7 +83,7 @@ lazy_static! {
 fn make_device_config(
     position: Position,
     sf: SpreadingFactor,
-    freq: f32,
+    freq: f64,
     bandwidth: LoRaBandwidth,
 ) -> NodeConfig {
     NodeConfig {
@@ -304,7 +304,7 @@ async fn deloran_main() -> World {
     let mut w = World::new(config);
 
     let nc1 = make_nc_config(
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10,111,77,109), 9090)),
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 207, 19, 151), 9090)),
         Position {
             x: 100.0,
             y: -100.0,
