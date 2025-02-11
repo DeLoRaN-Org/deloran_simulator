@@ -15,7 +15,7 @@ use tokio::{
 };
 
 use crate::{
-    constants::{FIXED_JOIN_DELAY, FIXED_PACKET_DELAY, RANDOM_JOIN_DELAY, RANDOM_PACKET_DELAY}, logger::Logger, physical_simulator::world::World, traffic_models::UNREGULAR_TRAFFIC_DISTRIBUTION
+    logger::Logger, physical_simulator::world::World, traffic_models::UNREGULAR_TRAFFIC_DISTRIBUTION
 };
 
 use super::node::{Node, NodeReceiver, NodeSender};
